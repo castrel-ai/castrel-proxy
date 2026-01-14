@@ -106,39 +106,43 @@ def pair(
         typer.secho("✓ 配对成功！", fg=typer.colors.GREEN)
         typer.echo(f"配置已保存到: {config.config_file}")
 
-        # 尝试加载并发送 MCP tools 信息
-        typer.echo("\n正在加载 MCP 服务...")
+        # 提交客户端信息到服务端（创建/更新会话），即使未配置 MCP 也必须执行，否则 WebSocket 会因找不到 session 而握手失败
+        typer.echo("\n正在向服务端注册客户端信息...")
         try:
             mcp_manager = get_mcp_manager()
 
-            # 异步连接 MCP 并获取 tools
-            async def sync_mcp_tools():
-                # 连接所有 MCP 服务
-                count = await mcp_manager.connect_all()
-                if count == 0:
-                    typer.echo("未配置 MCP 服务，跳过")
-                    return
+            async def register_client_info():
+                tools_payload: Dict[str, Any] = {}
+                try:
+                    # 尝试连接 MCP 服务并获取 tools（可选）
+                    count = await mcp_manager.connect_all()
+                    if count == 0:
+                        typer.echo("未配置 MCP 服务，将以空 tools 注册")
+                    else:
+                        typer.echo(f"已连接 {count} 个 MCP 服务")
+                        tools_payload = await mcp_manager.get_all_tools()
+                        total_tools = sum(len(v) for v in tools_payload.values())
+                        typer.echo(f"获取到 {total_tools} 个 tools")
+                except Exception as e:
+                    # MCP tools 获取失败不应阻塞会话创建；可后续使用 mcp-sync 再同步
+                    typer.secho(f"⚠ MCP tools 获取失败: {e}", fg=typer.colors.YELLOW)
+                    typer.echo("提示: 将以空 tools 继续注册，可稍后执行 'castrel-bridge-cli mcp-sync'")
+                    tools_payload = {}
+                finally:
+                    try:
+                        await mcp_manager.disconnect_all()
+                    except Exception:
+                        pass
 
-                typer.echo(f"已连接 {count} 个 MCP 服务")
+                typer.echo("正在提交客户端信息到服务端...")
+                await api_client._send_client_info(server_url, client_id, code, workspace_id, tools_payload)
 
-                # 获取所有 tools
-                tools = await mcp_manager.get_all_tools()
-                typer.echo(f"获取到 {len(tools)} 个 tools")
-
-                # 发送到服务端
-                if tools:
-                    typer.echo("正在发送 MCP tools 信息到服务端...")
-                    await api_client._send_client_info(server_url, client_id, code, workspace_id, tools)
-                    typer.secho("✓ MCP tools 信息已同步", fg=typer.colors.GREEN)
-
-                # 断开 MCP 连接
-                await mcp_manager.disconnect_all()
-
-            asyncio.run(sync_mcp_tools())
+            asyncio.run(register_client_info())
+            typer.secho("✓ 客户端信息已注册（会话已创建）", fg=typer.colors.GREEN)
 
         except Exception as e:
-            typer.secho(f"⚠ MCP 同步失败: {e}", fg=typer.colors.YELLOW)
-            typer.echo("提示: 可以稍后手动同步 MCP 信息")
+            typer.secho(f"✗ 客户端信息注册失败: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1)
 
         typer.echo("\n提示: 使用 'castrel-bridge-cli start' 启动 bridge 服务")
 
@@ -416,30 +420,27 @@ def mcp_sync():
 
             # 获取所有 tools
             typer.echo("\n正在获取 tools 信息...")
-            tools = await mcp_manager.get_all_tools()
-            typer.secho(f"✓ 获取到 {len(tools)} 个 tools", fg=typer.colors.GREEN)
+            tools_by_server = await mcp_manager.get_all_tools()
+            total_tools = sum(len(v) for v in tools_by_server.values())
+            typer.secho(f"✓ 获取到 {total_tools} 个 tools", fg=typer.colors.GREEN)
 
             # 显示 tools 概览
-            if tools:
+            if tools_by_server:
                 typer.echo("\nTools 概览:")
-                tool_by_server = {}
-                for tool in tools:
-                    server = tool.get("mcp_server", "unknown")
-                    if server not in tool_by_server:
-                        tool_by_server[server] = []
-                    tool_by_server[server].append(tool["name"])
-
-                for server, tool_names in tool_by_server.items():
-                    typer.echo(f"  {server}: {len(tool_names)} 个 tools")
-                    for name in tool_names[:3]:  # 只显示前3个
+                for server, server_tools in tools_by_server.items():
+                    typer.echo(f"  {server}: {len(server_tools)} 个 tools")
+                    for tool in server_tools[:3]:  # 只显示前3个
+                        name = tool.get("name") if isinstance(tool, dict) else str(tool)
                         typer.echo(f"    - {name}")
-                    if len(tool_names) > 3:
-                        typer.echo(f"    ... 还有 {len(tool_names) - 3} 个")
+                    if len(server_tools) > 3:
+                        typer.echo(f"    ... 还有 {len(server_tools) - 3} 个")
 
             # 发送到服务端
-            if tools:
+            if total_tools > 0:
                 typer.echo("\n正在发送到服务端...")
-                await api_client._send_client_info(server_url, client_id, verification_code, workspace_id, tools)
+                await api_client._send_client_info(
+                    server_url, client_id, verification_code, workspace_id, tools_by_server
+                )
                 typer.secho("✓ MCP tools 信息已同步", fg=typer.colors.GREEN)
             else:
                 typer.secho("⚠ 没有 tools 需要同步", fg=typer.colors.YELLOW)

@@ -76,7 +76,6 @@ class APIClient:
         # 请求数据
         payload = {
             'verification_code': verification_code,
-            'client_id': client_id,
             'workspace_id': workspace_id
         }
         
@@ -192,7 +191,7 @@ class APIClient:
         client_id: str,
         verification_code: str,
         workspace_id: str,
-        tools: list
+        tools: Dict
     ) -> bool:
         """
         异步发送 MCP tools 信息到服务端
