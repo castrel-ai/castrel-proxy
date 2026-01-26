@@ -1,6 +1,6 @@
 # Castrel Bridge Proxy
 
-[![CI](https://github.com/castrel-ai/castrel-bridge-proxy/workflows/CI/badge.svg)](https://github.com/castrel-ai/castrel-bridge-proxy/actions)
+[![CI](https://github.com/castrel-ai/castrel-proxy/workflows/CI/badge.svg)](https://github.com/castrel-ai/castrel-proxy/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python Version](https://img.shields.io/pypi/pyversions/castrel-proxy)](https://pypi.org/project/castrel-proxy/)
 
@@ -29,8 +29,8 @@ pip install castrel-proxy
 ### From source
 
 ```bash
-git clone https://github.com/castrel-ai/castrel-bridge-proxy.git
-cd castrel-bridge-proxy
+git clone https://github.com/castrel-ai/castrel-proxy.git
+cd castrel-proxy
 pip install -e .
 ```
 
@@ -181,8 +181,8 @@ python
 
 ```bash
 # Clone repository
-git clone https://github.com/castrel-ai/castrel-bridge-proxy.git
-cd castrel-bridge-proxy
+git clone https://github.com/castrel-ai/castrel-proxy.git
+cd castrel-proxy
 
 # Create virtual environment
 python -m venv venv
@@ -232,8 +232,8 @@ For security concerns, please see [SECURITY.md](SECURITY.md) or contact security
 
 ## 📮 Contact
 
-- Issues: [GitHub Issues](https://github.com/castrel-ai/castrel-bridge-proxy/issues)
-- Discussions: [GitHub Discussions](https://github.com/castrel-ai/castrel-bridge-proxy/discussions)
+- Issues: [GitHub Issues](https://github.com/castrel-ai/castrel-proxy/issues)
+- Discussions: [GitHub Discussions](https://github.com/castrel-ai/castrel-proxy/discussions)
 
 ## 🙏 Acknowledgments
 

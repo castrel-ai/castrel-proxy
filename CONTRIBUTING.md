@@ -48,8 +48,8 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ```bash
 # Clone the repository
-git clone https://github.com/castrel-ai/castrel-bridge-proxy.git
-cd castrel-bridge-proxy
+git clone https://github.com/castrel-ai/castrel-proxy.git
+cd castrel-proxy
 
 # Create virtual environment
 python -m venv venv

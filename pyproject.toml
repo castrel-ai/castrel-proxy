@@ -1,6 +1,6 @@
 [project]
 name = "castrel-proxy"
-version = "0.1.5a2"
+version = "0.1.5a4"
 description = "A lightweight remote command execution bridge client with MCP integration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,11 +42,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/castrel-ai/castrel-bridge-proxy"
-Documentation = "https://github.com/castrel-ai/castrel-bridge-proxy#readme"
-Repository = "https://github.com/castrel-ai/castrel-bridge-proxy"
-Issues = "https://github.com/castrel-ai/castrel-bridge-proxy/issues"
-Changelog = "https://github.com/castrel-ai/castrel-bridge-proxy/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/castrel-ai/castrel-proxy"
+Documentation = "https://github.com/castrel-ai/castrel-proxy#readme"
+Repository = "https://github.com/castrel-ai/castrel-proxy"
+Issues = "https://github.com/castrel-ai/castrel-proxy/issues"
+Changelog = "https://github.com/castrel-ai/castrel-proxy/blob/main/CHANGELOG.md"
 
 [project.scripts]
 castrel-proxy = "castrel_proxy.cli.commands:run"

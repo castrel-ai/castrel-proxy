@@ -25,8 +25,8 @@ uv pip install castrel-proxy
 
 ```bash
 # Clone the repository
-git clone https://github.com/castrel-ai/castrel-bridge-proxy.git
-cd castrel-bridge-proxy
+git clone https://github.com/castrel-ai/castrel-proxy.git
+cd castrel-proxy
 
 # Install in development mode
 pip install -e .
@@ -35,7 +35,7 @@ pip install -e .
 ### Method 3: Install from GitHub
 
 ```bash
-pip install git+https://github.com/castrel-ai/castrel-bridge-proxy.git
+pip install git+https://github.com/castrel-ai/castrel-proxy.git
 ```
 
 ## Verify Installation

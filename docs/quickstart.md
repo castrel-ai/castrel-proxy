@@ -212,5 +212,5 @@ Check:
 ## Getting Help
 
 - [Documentation](../README.md)
-- [GitHub Issues](https://github.com/castrel-ai/castrel-bridge-proxy/issues)
+- [GitHub Issues](https://github.com/castrel-ai/castrel-proxy/issues)
 - [Contributing Guide](../CONTRIBUTING.md)

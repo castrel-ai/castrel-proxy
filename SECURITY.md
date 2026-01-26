@@ -125,4 +125,4 @@ Before deploying to production:
 
 For security concerns: security@example.com
 
-For general issues: https://github.com/castrel-ai/castrel-bridge-proxy/issues
+For general issues: https://github.com/castrel-ai/castrel-proxy/issues
