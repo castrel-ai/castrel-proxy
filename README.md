@@ -1,4 +1,4 @@
-# Castrel Bridge Proxy
+# Castrel Proxy
 
 [![CI](https://github.com/castrel-ai/castrel-proxy/workflows/CI/badge.svg)](https://github.com/castrel-ai/castrel-proxy/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -184,12 +184,8 @@ python
 git clone https://github.com/castrel-ai/castrel-proxy.git
 cd castrel-proxy
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -e ".[dev]"
+# Install dependencies and sync environment
+uv sync
 ```
 
 ### Run Tests
