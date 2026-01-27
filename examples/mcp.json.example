@@ -1,4 +1,5 @@
 {
+  "notes": "Example MCP configuration for Castrel Proxy. Supported transports: stdio, http, sse. Place this file at ~/.castrel/mcp.json",
   "mcpServers": {
     "filesystem": {
       "transport": "stdio",
@@ -10,31 +11,13 @@
       ],
       "env": {}
     },
-    "github": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-github"
-      ],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "your-github-token"
-      }
-    },
-    "brave-search": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-brave-search"
-      ],
-      "env": {
-        "BRAVE_API_KEY": "your-brave-api-key"
-      }
-    },
     "weather": {
       "transport": "http",
       "url": "http://localhost:8000/mcp"
+    },
+    "internal-sse": {
+      "transport": "sse",
+      "url": "http://localhost:8001/sse"
     },
     "custom-server": {
       "transport": "stdio",

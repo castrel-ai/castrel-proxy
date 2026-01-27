@@ -69,18 +69,22 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
                 "url": server_config.get("url"),
             }
 
-        elif transport in ["sse", "websocket"]:
-            error_msg = (
-                f"Configuration error for server '{name}': Transport type '{transport}' is not yet supported. "
-                f"Currently supported transports: 'stdio', 'http'"
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+        elif transport == "sse":
+            # sse type: use url
+            if not server_config.get("url"):
+                error_msg = f"Configuration error for server '{name}': Missing 'url' for sse transport"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            langchain_config[name] = {
+                "transport": "sse",
+                "url": server_config.get("url"),
+            }
 
         else:
             error_msg = (
                 f"Configuration error for server '{name}': Unknown transport type '{transport}'. "
-                f"Supported transports: 'stdio', 'http'"
+                f"Supported transports: 'stdio', 'http', 'sse'"
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
