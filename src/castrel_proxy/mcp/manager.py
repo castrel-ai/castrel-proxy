@@ -213,21 +213,18 @@ class MCPManager:
         Get tools from all MCP services
 
         Returns:
-            Dict[str, List[Dict]]: All tools list
-
-        Raises:
-            SystemExit: When MCP client is not initialized or tools retrieval fails
+            Dict[str, List[Dict]]: All tools list (may be partial if some servers fail)
         """
         if not self.client:
             logger.error("MCP client not initialized")
-            logger.error("Exiting due to uninitialized MCP client")
-            sys.exit(1)
+            return {}
 
-        try:
-            # Use MultiServerMCPClient to get all tools
-            result = {}
-            count = 0
-            for server_name in self.server_configs:
+        result = {}
+        total_count = 0
+        failed_servers = []
+
+        for server_name in self.server_configs:
+            try:
                 tools = await self.client.get_tools(server_name=server_name)
                 # Convert to required format
                 formatted_tools = []
@@ -240,27 +237,29 @@ class MCPManager:
                         "mcp_server": getattr(tool, "server_name", "unknown"),
                     }
                     formatted_tools.append(tool_info)
-                count = count + len(formatted_tools)
+                total_count += len(formatted_tools)
                 result[server_name] = formatted_tools
+                logger.info(f"Retrieved {len(formatted_tools)} tool(s) from '{server_name}'")
 
-            if count == 0:
-                logger.warning("No tools retrieved from any MCP server")
-                logger.warning("Exiting due to zero tools retrieved")
-                sys.exit(1)
+            except Exception as e:
+                failed_servers.append(server_name)
+                # Log error but continue with other servers
+                if "Configuration error" in str(e) or "Missing 'transport' key" in str(e):
+                    logger.error(f"Configuration error for server '{server_name}': {e}")
+                else:
+                    logger.error(f"Failed to get tools from server '{server_name}': {e}")
 
-            logger.info(f"Retrieved {count} tool(s)")
-            return result
+        if failed_servers:
+            logger.warning(
+                f"Failed to retrieve tools from {len(failed_servers)} server(s): {', '.join(failed_servers)}"
+            )
 
-        except Exception as e:
-            # Check if it's a configuration error
-            if "Configuration error" in str(e) or "Missing 'transport' key" in str(e):
-                logger.error(f"Configuration error while getting MCP tools: {e}")
-                logger.error("Exiting due to invalid MCP configuration")
-                sys.exit(1)
-            else:
-                logger.error(f"Failed to get MCP tools: {e}")
-                logger.error("Exiting due to MCP tools retrieval failure")
-                sys.exit(1)
+        if total_count == 0:
+            logger.warning("No tools retrieved from any MCP server")
+        else:
+            logger.info(f"Retrieved {total_count} tool(s) from {len(result)} server(s)")
+
+        return result
 
     async def disconnect_all(self):
         """Disconnect all MCP connections"""

@@ -178,7 +178,7 @@ def pair(
 @app.command()
 def start(
     daemon: bool = typer.Option(
-        True, "--daemon/--foreground", "-d/-f", help="Run in background (default) or foreground"
+        False, "--daemon/--foreground", "-d/-f", help="Run in background or foreground (default)"
     ),
 ):
     """
@@ -186,14 +186,14 @@ def start(
 
     Start bridge and connect to paired server.
 
-    Run in background (default):
+    Run in foreground (default):
       castrel-proxy start
-      castrel-proxy start --daemon
-      castrel-proxy start -d
-
-    Run in foreground:
       castrel-proxy start --foreground
       castrel-proxy start -f
+
+    Run in background:
+      castrel-proxy start --daemon
+      castrel-proxy start -d
     """
     config = get_config()
 
