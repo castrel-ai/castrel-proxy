@@ -7,7 +7,7 @@ Responsible for performing OpenClaw health checks and returning structured statu
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -118,18 +118,26 @@ class OpenClawChecker:
             timestamp_str: Timestamp string
 
         Returns:
-            Optional[datetime]: Parsed datetime or None if failed
+            Optional[datetime]: Parsed datetime (timezone-aware, UTC) or None if failed
         """
         try:
             # Try ISO format first
-            return datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            # Convert to UTC if timezone-aware, otherwise assume UTC
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc)
+            else:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         except (ValueError, AttributeError):
             try:
                 # Try Unix timestamp (milliseconds or seconds)
                 ts = float(timestamp_str)
                 if ts > 1e12:  # Milliseconds
                     ts = ts / 1000
-                return datetime.fromtimestamp(ts)
+                # fromtimestamp returns local time, convert to UTC
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                return dt
             except (ValueError, OSError):
                 return None
 
@@ -302,7 +310,7 @@ class OpenClawChecker:
 
         try:
             # Check if file was modified in the last minute
-            mtime = datetime.fromtimestamp(self.gateway_log_path.stat().st_mtime)
+            mtime = datetime.fromtimestamp(self.gateway_log_path.stat().st_mtime, tz=timezone.utc)
             if mtime >= now - timedelta(minutes=1):
                 return {
                     "status": "error",
@@ -343,7 +351,7 @@ class OpenClawChecker:
                 for jsonl_file in sessions_dir.glob("*.jsonl"):
                     # Check if file was modified in the last minute
                     try:
-                        mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime)
+                        mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime, tz=timezone.utc)
                         if mtime >= now - timedelta(minutes=1):
                             session_files.append(jsonl_file)
                     except OSError:
@@ -459,7 +467,7 @@ class OpenClawChecker:
             Optional[Dict]: OpenClaw status, or None if check cannot be performed
         """
         try:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             issues = []
 
             # Check runtime log
