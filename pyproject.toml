@@ -28,6 +28,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "mcp>=1.0.0",
     "langchain-mcp-adapters>=0.2.1",
+    "file-read-backwards>=2.0.0",
 ]
 
 [project.optional-dependencies]

@@ -148,6 +148,72 @@ class Config:
         """Get workspace ID"""
         return self.load()["workspace_id"]
 
+    def get_openclaw_check_enabled(self) -> bool:
+        """
+        Get OpenClaw check enabled status
+        
+        Returns:
+            bool: True if OpenClaw check is enabled, False otherwise (default)
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_check_enabled", False)
+        except ConfigError:
+            # If config doesn't exist, return False
+            return False
+
+    def get_openclaw_config_path(self) -> str:
+        """
+        Get OpenClaw config file path
+        
+        Returns:
+            str: Path to OpenClaw config file (~/.openclaw/openclaw.json)
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_config_path", str(Path.home() / ".openclaw" / "openclaw.json"))
+        except ConfigError:
+            return str(Path.home() / ".openclaw" / "openclaw.json")
+
+    def get_openclaw_runtime_log_path(self) -> str:
+        """
+        Get OpenClaw runtime log path
+        
+        Returns:
+            str: Path to OpenClaw runtime log file
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_runtime_log_path", "/tmp/openclaw/openclaw.log")
+        except ConfigError:
+            return "/tmp/openclaw/openclaw.log"
+
+    def get_openclaw_gateway_log_path(self) -> str:
+        """
+        Get OpenClaw gateway error log path
+        
+        Returns:
+            str: Path to OpenClaw gateway error log file
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_gateway_log_path", str(Path.home() / ".openclaw" / "logs" / "gateway.err.log"))
+        except ConfigError:
+            return str(Path.home() / ".openclaw" / "logs" / "gateway.err.log")
+
+    def get_openclaw_agents_dir(self) -> str:
+        """
+        Get OpenClaw agents directory path
+        
+        Returns:
+            str: Path to OpenClaw agents directory
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_agents_dir", str(Path.home() / ".openclaw" / "agents"))
+        except ConfigError:
+            return str(Path.home() / ".openclaw" / "agents")
+
 
 # Global configuration instance
 _config = Config()
