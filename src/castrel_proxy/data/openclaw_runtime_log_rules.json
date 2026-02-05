@@ -12,7 +12,7 @@
     "name": "RPC port disconnection"
   },
   {
-    "pattern": "all llm providers failed|no available llm provider",
+    "pattern": "all llm providers failed|All models failed|no available llm provider",
     "window_minutes": 1,
     "threshold": 1,
     "name": "LLM model permanent failure"

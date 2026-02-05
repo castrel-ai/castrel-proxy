@@ -55,13 +55,16 @@ class OpenClawChecker:
         """
         Initialize OpenClaw checker
         """
-        config = get_config()
+        self.config = get_config()
         
-        # Get paths from config
-        self.openclaw_config_path = Path(config.get_openclaw_config_path())
-        self.runtime_log_path = Path(config.get_openclaw_runtime_log_path())
-        self.gateway_log_path = Path(config.get_openclaw_gateway_log_path())
-        self.agents_dir = Path(config.get_openclaw_agents_dir())
+        # Get paths from config (runtime_log_path will be dynamic, see _get_runtime_log_path)
+        self.openclaw_config_path = Path(self.config.get_openclaw_config_path())
+        self.gateway_log_path = Path(self.config.get_openclaw_gateway_log_path())
+        self.agents_dir = Path(self.config.get_openclaw_agents_dir())
+        
+        # Store configured runtime log path (may be empty for date-based rotation)
+        self._configured_runtime_log_path = None
+        self._load_configured_runtime_log_path()
         
         # Load runtime log rules from file
         self.runtime_log_rules = self._load_runtime_log_rules()
@@ -71,9 +74,6 @@ class OpenClawChecker:
             (rule.get("window_minutes", 1) for rule in self.runtime_log_rules),
             default=10
         )
-        
-        # Try to get runtime log path from OpenClaw config if it exists
-        self._update_runtime_log_path_from_config()
 
     def _load_runtime_log_rules(self) -> List[Dict]:
         """
@@ -94,10 +94,28 @@ class OpenClawChecker:
             # Return empty list if rules file cannot be loaded
             return []
 
-    def _update_runtime_log_path_from_config(self):
+    def _load_configured_runtime_log_path(self):
         """
-        Update runtime log path from OpenClaw config file if it exists
+        Load configured runtime log path from config or OpenClaw config file
+        
+        Note: If openclaw_runtime_log_path is explicitly set to empty string in castrel config,
+        it means use date-based rotation, so we won't try OpenClaw config file.
         """
+        # First, try to get from castrel config
+        try:
+            config_data = self.config.load()
+            # Check if key exists (even if value is empty string)
+            if "openclaw_runtime_log_path" in config_data:
+                configured_path = config_data["openclaw_runtime_log_path"]
+                if configured_path:  # Only set if not empty
+                    self._configured_runtime_log_path = Path(configured_path)
+                    logger.debug(f"Loaded runtime log path from castrel config: {self._configured_runtime_log_path}")
+                # If empty string, it means use date-based rotation, so don't try OpenClaw config
+                return
+        except Exception:
+            pass
+        
+        # If not in castrel config, try OpenClaw config file
         try:
             if self.openclaw_config_path.exists():
                 with open(self.openclaw_config_path, "r", encoding="utf-8") as f:
@@ -105,10 +123,25 @@ class OpenClawChecker:
                     logging_config = config.get("logging", {})
                     log_file = logging_config.get("file")
                     if log_file:
-                        self.runtime_log_path = Path(log_file)
-                        logger.debug(f"Updated runtime log path from OpenClaw config: {self.runtime_log_path}")
+                        self._configured_runtime_log_path = Path(log_file)
+                        logger.debug(f"Loaded runtime log path from OpenClaw config: {self._configured_runtime_log_path}")
         except Exception as e:
             logger.warning(f"Failed to read OpenClaw config for log path: {e}")
+    
+    def _get_runtime_log_path(self) -> Path:
+        """
+        Get current runtime log path (dynamic, based on current date if not configured)
+        
+        Returns:
+            Path: Current runtime log path
+        """
+        # If configured path exists, use it
+        if self._configured_runtime_log_path:
+            return self._configured_runtime_log_path
+        
+        # Otherwise, use date-based path (YYYY-MM-DD format, based on local time)
+        local_date = datetime.now().strftime("%Y-%m-%d")
+        return Path(f"/tmp/openclaw/openclaw-{local_date}.log")
 
     def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
         """
@@ -233,13 +266,15 @@ class OpenClawChecker:
             List[Dict]: List of detected issues
         """
         issues = []
+        
+        runtime_log_path = self._get_runtime_log_path()
 
-        if not self.runtime_log_path.exists():
+        if not runtime_log_path.exists():
             return issues
 
         try:
             # Read lines covering the maximum window time
-            lines = self._read_lines_for_window(self.runtime_log_path, now)
+            lines = self._read_lines_for_window(runtime_log_path, now)
             
             if not lines:
                 return issues
@@ -502,7 +537,7 @@ class OpenClawChecker:
                     "message": message,
                     "details": {
                         "issues": issues,
-                        "runtime_log_path": str(self.runtime_log_path),
+                        "runtime_log_path": str(self._get_runtime_log_path()),
                         "gateway_log_path": str(self.gateway_log_path),
                         "agents_dir": str(self.agents_dir),
                     },
@@ -512,7 +547,7 @@ class OpenClawChecker:
                     "status": "healthy",
                     "message": "All OpenClaw checks passed",
                     "details": {
-                        "runtime_log_path": str(self.runtime_log_path),
+                        "runtime_log_path": str(self._get_runtime_log_path()),
                         "gateway_log_path": str(self.gateway_log_path),
                         "agents_dir": str(self.agents_dir),
                     },
