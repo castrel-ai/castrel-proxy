@@ -1,0 +1,50 @@
+[
+  {
+    "pattern": "panic:|fatal|runtime error|segmentation fault|exit status",
+    "window_minutes": 1,
+    "threshold": 1,
+    "name": "Gateway process crash restart"
+  },
+  {
+    "pattern": "rpc server stopped|failed to serve rpc|listen tcp :4399",
+    "window_minutes": 1,
+    "threshold": 1,
+    "name": "RPC port disconnection"
+  },
+  {
+    "pattern": "all llm providers failed|All models failed|no available llm provider",
+    "window_minutes": 1,
+    "threshold": 1,
+    "name": "LLM model permanent failure"
+  },
+  {
+    "pattern": "rate limited|429 Too Many Requests|503 Service Unavailable",
+    "window_minutes": 1,
+    "threshold": 8,
+    "name": "Single model continuous 503/429"
+  },
+  {
+    "pattern": "tool execution timeout|context deadline exceeded.*tool",
+    "window_minutes": 2,
+    "threshold": 5,
+    "name": "Tool call continuous timeout"
+  },
+  {
+    "pattern": "created new page.*chrome",
+    "window_minutes": 5,
+    "threshold": 75,
+    "name": "Browser instance leak"
+  },
+  {
+    "pattern": "session ended unexpectedly|agent terminated by signal",
+    "window_minutes": 5,
+    "threshold": 5,
+    "name": "Agent session abnormal interruption"
+  },
+  {
+    "pattern": "tool.*failed permanently|(max retries exceeded.*(browser|google_search|fetch)|(browser|google_search|fetch).*max retries exceeded)",
+    "window_minutes": 10,
+    "threshold": 10,
+    "name": "Critical tool permanent failure"
+  }
+]

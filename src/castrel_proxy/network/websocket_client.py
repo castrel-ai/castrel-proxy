@@ -16,6 +16,8 @@ import aiohttp
 
 from ..operations import document
 from ..core.executor import CommandExecutor
+from ..core.openclaw import OpenClawChecker
+from ..core.config import get_config
 from ..mcp.manager import get_mcp_manager
 from ..security.whitelist import get_whitelist_file_path, is_command_allowed
 
@@ -55,6 +57,12 @@ class WebSocketClient:
         self.session: Optional[aiohttp.ClientSession] = None
         self.heartbeat_task: Optional[asyncio.Task] = None
         self.heartbeat_interval = 30.0  # 30seconds，Ensure enough heartbeats before server timeout
+        # OpenClaw check related
+        self.openclaw_checker = OpenClawChecker()
+        self.openclaw_check_enabled = get_config().get_openclaw_check_enabled()
+        self.openclaw_check_task: Optional[asyncio.Task] = None
+        self.openclaw_check_interval = 60.0  # OpenClaw check interval (seconds)
+        self.last_openclaw_status = None  # Track last status to avoid duplicate notifications
 
     def _get_ws_url(self) -> str:
         """Get WebSocket URL"""
@@ -332,6 +340,119 @@ class WebSocketClient:
                 break
 
         logger.info(f"[CLIENT-HEARTBEAT-STOP] Heartbeat task stopped: client_id={self.client_id}")
+
+    async def _perform_openclaw_check(self) -> dict:
+        """
+        Perform OpenClaw check
+        
+        Returns:
+            dict: OpenClaw status with the following structure:
+                {
+                    "status": "healthy|warning|error",
+                    "message": "Status description",
+                    "details": {
+                        # Check-specific parameters from OpenClawChecker
+                    }
+                }
+        """
+        openclaw_status = await self.openclaw_checker.check_all()
+        return openclaw_status.to_dict()
+
+    async def _openclaw_check_loop(self):
+        """OpenClaw check loop - independent coroutine that sends notifications when issues are detected"""
+        logger.info(
+            f"[CLIENT-OPENCLAW-CHECK-START] OpenClaw check task started: "
+            f"interval={self.openclaw_check_interval}s, client_id={self.client_id}"
+        )
+
+        while self.running and self.ws and not self.ws.closed:
+            try:
+                # Perform OpenClaw check
+                status = await self._perform_openclaw_check()
+                
+                # If issues detected and status changed, send notification
+                if status.get("status") != "healthy":
+                    # Check if status changed (avoid duplicate notifications)
+                    status_key = (status.get("status"), status.get("message"))
+                    if status_key != self.last_openclaw_status:
+                        await self._send_openclaw_notification(status)
+                        self.last_openclaw_status = status_key
+                else:
+                    # When recovered, if there was a previous issue, also send a notification
+                    if self.last_openclaw_status is not None:
+                        await self._send_openclaw_notification(status)
+                        self.last_openclaw_status = None
+
+                # Wait for next check
+                await asyncio.sleep(self.openclaw_check_interval)
+
+            except Exception as e:
+                logger.error(
+                    f"[CLIENT-OPENCLAW-CHECK-ERROR] OpenClaw check error: {e}, "
+                    f"client_id={self.client_id}",
+                    exc_info=True
+                )
+                # Continue running even if check fails
+                await asyncio.sleep(self.openclaw_check_interval)
+
+        logger.info(
+            f"[CLIENT-OPENCLAW-CHECK-STOP] OpenClaw check task stopped: "
+            f"client_id={self.client_id}"
+        )
+
+    async def _send_openclaw_notification(self, status: dict):
+        """
+        Send OpenClaw status notification message
+        
+        Args:
+            status: OpenClaw status dictionary with structure:
+                {
+                    "status": "healthy|warning|error",
+                    "message": "Status description",
+                    "details": {
+                        # Any check-specific parameters
+                    }
+                }
+        """
+        if not self.ws or self.ws.closed:
+            logger.warning(
+                f"[CLIENT-OPENCLAW-NOTIFY] WebSocket not connected, skipping notification: "
+                f"client_id={self.client_id}"
+            )
+            return
+
+        try:
+            notification_msg = {
+                "id": str(uuid.uuid4()),
+                "type": "health_status",  # Keep "health_status" for protocol compatibility
+                "timestamp": int(time.time() * 1000),
+                "data": {
+                    "status": status.get("status"),
+                    "message": status.get("message"),
+                    "details": status.get("details", {}),
+                }
+            }
+            
+            logger.info(
+                f"[CLIENT-OPENCLAW-NOTIFY] Sending OpenClaw notification: "
+                f"status={status.get('status')}, message_id={notification_msg['id']}, "
+                f"client_id={self.client_id}"
+            )
+            
+            # Send message directly
+            await self.ws.send_json(notification_msg)
+            
+            logger.debug(
+                f"[CLIENT-OPENCLAW-NOTIFY] OpenClaw notification sent: "
+                f"message_id={notification_msg['id']}, client_id={self.client_id}"
+            )
+            
+        except Exception as e:
+            logger.error(
+                f"[CLIENT-OPENCLAW-NOTIFY-ERROR] Failed to send OpenClaw notification: "
+                f"error={e}, client_id={self.client_id}",
+                exc_info=True
+            )
 
     async def _execute_local_command(
         self,
@@ -1029,6 +1150,19 @@ class WebSocketClient:
                 f"client_id={self.client_id}"
             )
 
+            # Start OpenClaw check task (if enabled)
+            if self.openclaw_check_enabled:
+                self.openclaw_check_task = asyncio.create_task(self._openclaw_check_loop())
+                logger.info(
+                    f"[CLIENT-OPENCLAW-CHECK-TASK] OpenClaw check task started: "
+                    f"interval={self.openclaw_check_interval}s, client_id={self.client_id}"
+                )
+            else:
+                logger.debug(
+                    f"[CLIENT-OPENCLAW-CHECK-TASK] OpenClaw check disabled, skipping task start: "
+                    f"client_id={self.client_id}"
+                )
+
             return True
 
         except Exception as e:
@@ -1043,6 +1177,22 @@ class WebSocketClient:
     async def disconnect(self):
         """Disconnect WebSocket connection"""
         logger.info(f"[CLIENT-DISCONNECT-START] Starting disconnect process: client_id={self.client_id}")
+
+        # Stop OpenClaw check task
+        if self.openclaw_check_task and not self.openclaw_check_task.done():
+            logger.debug(
+                f"[CLIENT-DISCONNECT-OPENCLAW-CHECK] Cancelling OpenClaw check task: "
+                f"client_id={self.client_id}"
+            )
+            self.openclaw_check_task.cancel()
+            try:
+                await self.openclaw_check_task
+            except asyncio.CancelledError:
+                pass
+            logger.info(
+                f"[CLIENT-DISCONNECT-OPENCLAW-CHECK] OpenClaw check task stopped: "
+                f"client_id={self.client_id}"
+            )
 
         # Stop heartbeat task
         if self.heartbeat_task and not self.heartbeat_task.done():

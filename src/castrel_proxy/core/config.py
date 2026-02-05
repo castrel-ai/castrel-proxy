@@ -4,7 +4,7 @@ Configuration File Management Module
 Handles reading, writing, and validating the ~/.castrel/config.yaml configuration file
 """
 
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -56,13 +56,57 @@ class Config:
         """
         self._ensure_config_dir()
 
+        # Load existing config to preserve openclaw settings
+        existing_config = {}
+        if self.config_file.exists():
+            try:
+                with open(self.config_file, "r", encoding="utf-8") as f:
+                    existing_config = yaml.safe_load(f) or {}
+            except Exception:
+                # If loading fails, start with empty dict
+                existing_config = {}
+
         config_data = {
             "server_url": server_url,
             "verification_code": verification_code,
             "client_id": client_id,
             "workspace_id": workspace_id,
-            "paired_at": datetime.utcnow().isoformat() + "Z",
+            "paired_at": datetime.now(UTC).isoformat() + "Z",
         }
+
+        # Preserve or initialize openclaw configuration
+        # If exists in existing config, preserve it; otherwise use default values from getters
+        # Note: openclaw_runtime_log_path should not be saved if empty, to allow date-based rotation
+        
+        # openclaw_check_enabled
+        if "openclaw_check_enabled" in existing_config:
+            config_data["openclaw_check_enabled"] = existing_config["openclaw_check_enabled"]
+        else:
+            config_data["openclaw_check_enabled"] = False
+        
+        # openclaw_config_path
+        if "openclaw_config_path" in existing_config:
+            config_data["openclaw_config_path"] = existing_config["openclaw_config_path"]
+        else:
+            config_data["openclaw_config_path"] = str(Path.home() / ".openclaw" / "openclaw.json")
+        
+        # openclaw_runtime_log_path - only save if not empty
+        if "openclaw_runtime_log_path" in existing_config:
+            runtime_log_path = existing_config["openclaw_runtime_log_path"]
+            if runtime_log_path:  # Only save if not empty
+                config_data["openclaw_runtime_log_path"] = runtime_log_path
+        
+        # openclaw_gateway_log_path
+        if "openclaw_gateway_log_path" in existing_config:
+            config_data["openclaw_gateway_log_path"] = existing_config["openclaw_gateway_log_path"]
+        else:
+            config_data["openclaw_gateway_log_path"] = str(Path.home() / ".openclaw" / "logs" / "gateway.err.log")
+        
+        # openclaw_agents_dir
+        if "openclaw_agents_dir" in existing_config:
+            config_data["openclaw_agents_dir"] = existing_config["openclaw_agents_dir"]
+        else:
+            config_data["openclaw_agents_dir"] = str(Path.home() / ".openclaw" / "agents")
 
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
@@ -147,6 +191,59 @@ class Config:
     def get_workspace_id(self) -> str:
         """Get workspace ID"""
         return self.load()["workspace_id"]
+
+    def get_openclaw_check_enabled(self) -> bool:
+        """
+        Get OpenClaw check enabled status
+        
+        Returns:
+            bool: True if OpenClaw check is enabled, False otherwise (default)
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_check_enabled", False)
+        except ConfigError:
+            # If config doesn't exist, return False
+            return False
+
+    def get_openclaw_config_path(self) -> str:
+        """
+        Get OpenClaw config file path
+        
+        Returns:
+            str: Path to OpenClaw config file (~/.openclaw/openclaw.json)
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_config_path", str(Path.home() / ".openclaw" / "openclaw.json"))
+        except ConfigError:
+            return str(Path.home() / ".openclaw" / "openclaw.json")
+
+    def get_openclaw_gateway_log_path(self) -> str:
+        """
+        Get OpenClaw gateway error log path
+        
+        Returns:
+            str: Path to OpenClaw gateway error log file
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_gateway_log_path", str(Path.home() / ".openclaw" / "logs" / "gateway.err.log"))
+        except ConfigError:
+            return str(Path.home() / ".openclaw" / "logs" / "gateway.err.log")
+
+    def get_openclaw_agents_dir(self) -> str:
+        """
+        Get OpenClaw agents directory path
+        
+        Returns:
+            str: Path to OpenClaw agents directory
+        """
+        try:
+            config = self.load()
+            return config.get("openclaw_agents_dir", str(Path.home() / ".openclaw" / "agents"))
+        except ConfigError:
+            return str(Path.home() / ".openclaw" / "agents")
 
 
 # Global configuration instance
