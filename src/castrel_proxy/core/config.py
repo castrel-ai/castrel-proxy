@@ -4,7 +4,7 @@ Configuration File Management Module
 Handles reading, writing, and validating the ~/.castrel/config.yaml configuration file
 """
 
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -71,37 +71,37 @@ class Config:
             "verification_code": verification_code,
             "client_id": client_id,
             "workspace_id": workspace_id,
-            "paired_at": datetime.now(UTC).isoformat() + "Z",
+            "paired_at": datetime.now(timezone.utc).isoformat(),
         }
 
         # Preserve or initialize openclaw configuration
         # If exists in existing config, preserve it; otherwise use default values from getters
         # Note: openclaw_runtime_log_path should not be saved if empty, to allow date-based rotation
-        
+
         # openclaw_check_enabled
         if "openclaw_check_enabled" in existing_config:
             config_data["openclaw_check_enabled"] = existing_config["openclaw_check_enabled"]
         else:
             config_data["openclaw_check_enabled"] = False
-        
+
         # openclaw_config_path
         if "openclaw_config_path" in existing_config:
             config_data["openclaw_config_path"] = existing_config["openclaw_config_path"]
         else:
             config_data["openclaw_config_path"] = str(Path.home() / ".openclaw" / "openclaw.json")
-        
+
         # openclaw_runtime_log_path - only save if not empty
         if "openclaw_runtime_log_path" in existing_config:
             runtime_log_path = existing_config["openclaw_runtime_log_path"]
             if runtime_log_path:  # Only save if not empty
                 config_data["openclaw_runtime_log_path"] = runtime_log_path
-        
+
         # openclaw_gateway_log_path
         if "openclaw_gateway_log_path" in existing_config:
             config_data["openclaw_gateway_log_path"] = existing_config["openclaw_gateway_log_path"]
         else:
             config_data["openclaw_gateway_log_path"] = str(Path.home() / ".openclaw" / "logs" / "gateway.err.log")
-        
+
         # openclaw_agents_dir
         if "openclaw_agents_dir" in existing_config:
             config_data["openclaw_agents_dir"] = existing_config["openclaw_agents_dir"]
