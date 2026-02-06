@@ -14,11 +14,11 @@ from typing import Optional
 
 import aiohttp
 
-from ..operations import document
+from ..core.config import get_config
 from ..core.executor import CommandExecutor
 from ..core.openclaw import OpenClawChecker
-from ..core.config import get_config
 from ..mcp.manager import get_mcp_manager
+from ..operations import document
 from ..security.whitelist import get_whitelist_file_path, is_command_allowed
 
 # Configure logging
@@ -29,12 +29,12 @@ class WebSocketClient:
     """WebSocket client"""
 
     def __init__(
-        self,
-        server_url: str,
-        client_id: str,
-        verification_code: str,
-        workspace_id: str,
-        reconnect_interval: float = 5.0,
+            self,
+            server_url: str,
+            client_id: str,
+            verification_code: str,
+            workspace_id: str,
+            reconnect_interval: float = 5.0,
     ):
         """
         初始化 WebSocket client
@@ -74,15 +74,15 @@ class WebSocketClient:
         return f"{ws_url}/api/v1/bridge/ws?client_id={self.client_id}&workspace_id={self.workspace_id}&verification_code={self.verification_code}"
 
     def _log_operation(
-        self,
-        session_id: str,
-        operation_type: str,
-        operation: str,
-        arguments: any = None,
-        result: any = None,
-        success: bool = True,
-        elapsed: float = 0.0,
-        error: str = None,
+            self,
+            session_id: str,
+            operation_type: str,
+            operation: str,
+            arguments: any = None,
+            result: any = None,
+            success: bool = True,
+            elapsed: float = 0.0,
+            error: str = None,
     ):
         """
         Log operation to terminal.log
@@ -369,7 +369,7 @@ class WebSocketClient:
             try:
                 # Perform OpenClaw check
                 status = await self._perform_openclaw_check()
-                
+
                 # If issues detected and status changed, send notification
                 if status.get("status") != "healthy":
                     # Check if status changed (avoid duplicate notifications)
@@ -432,21 +432,21 @@ class WebSocketClient:
                     "details": status.get("details", {}),
                 }
             }
-            
+
             logger.info(
                 f"[CLIENT-OPENCLAW-NOTIFY] Sending OpenClaw notification: "
                 f"status={status.get('status')}, message_id={notification_msg['id']}, "
                 f"client_id={self.client_id}"
             )
-            
+
             # Send message directly
             await self.ws.send_json(notification_msg)
-            
+
             logger.debug(
                 f"[CLIENT-OPENCLAW-NOTIFY] OpenClaw notification sent: "
                 f"message_id={notification_msg['id']}, client_id={self.client_id}"
             )
-            
+
         except Exception as e:
             logger.error(
                 f"[CLIENT-OPENCLAW-NOTIFY-ERROR] Failed to send OpenClaw notification: "
@@ -455,13 +455,13 @@ class WebSocketClient:
             )
 
     async def _execute_local_command(
-        self,
-        message_id: str,
-        command: str,
-        session_id: str,
-        args: list = None,
-        cwd: Optional[str] = None,
-        timeout: int = 300,
+            self,
+            message_id: str,
+            command: str,
+            session_id: str,
+            args: list = None,
+            cwd: Optional[str] = None,
+            timeout: int = 300,
     ) -> dict:
         """
         Execute local command
@@ -584,12 +584,12 @@ class WebSocketClient:
             }
 
     async def _execute_mcp_tool(
-        self,
-        message_id: str,
-        server_name: str,
-        tool_name: str,
-        session_id: str,
-        arguments: dict,
+            self,
+            message_id: str,
+            server_name: str,
+            tool_name: str,
+            session_id: str,
+            arguments: dict,
     ) -> dict:
         """
         Execute MCP tool
@@ -722,11 +722,11 @@ class WebSocketClient:
             }
 
     async def _execute_doc_read(
-        self,
-        message_id: str,
-        file_path: str,
-        session_id: str,
-        encoding: Optional[str] = None,
+            self,
+            message_id: str,
+            file_path: str,
+            session_id: str,
+            encoding: Optional[str] = None,
     ) -> dict:
         """
         Execute document read
@@ -813,13 +813,13 @@ class WebSocketClient:
             }
 
     async def _execute_doc_write(
-        self,
-        message_id: str,
-        file_path: str,
-        session_id: str,
-        content: str,
-        encoding: str = "utf-8",
-        create_dirs: bool = True,
+            self,
+            message_id: str,
+            file_path: str,
+            session_id: str,
+            content: str,
+            encoding: str = "utf-8",
+            create_dirs: bool = True,
     ) -> dict:
         """
         Execute document write
@@ -920,14 +920,14 @@ class WebSocketClient:
             }
 
     async def _execute_doc_edit(
-        self,
-        message_id: str,
-        file_path: str,
-        session_id: str,
-        operation: str,
-        new_content: str,
-        old_content: Optional[str] = None,
-        encoding: Optional[str] = None,
+            self,
+            message_id: str,
+            file_path: str,
+            session_id: str,
+            operation: str,
+            new_content: str,
+            old_content: Optional[str] = None,
+            encoding: Optional[str] = None,
     ) -> dict:
         """
         Execute document edit
