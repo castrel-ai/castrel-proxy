@@ -601,6 +601,9 @@ def mcp_sync():
 
 def run():
     """Entry point for the CLI application"""
+    # 如果没有任何参数（只有程序名），则添加 --help 参数
+    if len(sys.argv) == 1:
+        sys.argv.append("--help")
     app()
 
 

@@ -22,7 +22,7 @@ Used for continuous integration testing, automatically runs on every push to mai
 Used for building PyInstaller binaries, supports multi-platform builds.
 
 **Features:**
-- Build single executable files on Linux, macOS, Windows
+- Build single executable files on Linux (x86_64, ARM64) and macOS (x86_64, ARM64)
 - Automatically test built binaries
 - Create GitHub Release (when pushing tags)
 - Generate SHA256 checksums
@@ -42,7 +42,7 @@ Used for building PyInstaller binaries, supports multi-platform builds.
    ```
 
 2. **GitHub Actions will automatically:**
-   - Build binaries on three platforms
+   - Build binaries on four platforms (Linux x86_64, Linux ARM64, macOS ARM64, macOS x86_64)
    - Test each binary
    - Create GitHub Release
    - Upload all binaries and checksums
@@ -63,9 +63,10 @@ After building, you can find binaries in the following locations:
 
 ### Binary File Naming
 
-- Linux: `castrel-proxy-linux-x86_64`
-- macOS: `castrel-proxy-macos-x86_64`
-- Windows: `castrel-proxy-windows-x86_64.exe`
+- Linux x86_64: `castrel-proxy-linux-x86_64`
+- Linux ARM64: `castrel-proxy-linux-arm64`
+- macOS ARM64 (Apple Silicon): `castrel-proxy-macos-arm64`
+- macOS x86_64 (Intel): `castrel-proxy-macos-x86_64`
 
 ### Local Build
 
@@ -78,10 +79,19 @@ uv sync --all-extras
 # Install PyInstaller
 uv pip install pyinstaller
 
-# Create entry script (resolves relative import issues)
+# Create entry script (resolves relative import issues + SSL certs for PyInstaller)
 cat > entry_point.py << 'EOF'
 #!/usr/bin/env python
 """Entry point for PyInstaller - uses absolute imports"""
+import sys
+import os
+
+# Fix SSL certificates when running as PyInstaller bundle (required for aiohttp HTTPS)
+if getattr(sys, 'frozen', False):
+    import certifi
+    os.environ['SSL_CERT_FILE'] = certifi.where()
+    os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
 from castrel_proxy.cli.commands import run
 if __name__ == "__main__":
     run()
@@ -99,8 +109,10 @@ uv run pyinstaller \
   --hidden-import mcp \
   --hidden-import langchain_mcp_adapters \
   --hidden-import file_read_backwards \
-  --console \
+  --hidden-import certifi \
   --collect-all castrel_proxy \
+  --collect-data certifi \
+  --console \
   entry_point.py
 
 # Binary files will be in dist/ directory
@@ -113,9 +125,11 @@ If the build fails, check:
 1. **Dependency issues**: Ensure all dependencies are correctly installed
 2. **Hidden imports**: If you encounter `ModuleNotFoundError` at runtime, you may need to add `--hidden-import`
 3. **Resource files**: Ensure using `importlib.resources` to access package data files (already fixed)
+4. **SSL/HTTPS connections**: If "Unable to connect to server" occurs with PyInstaller binary but works with pip install, ensure certifi is bundled and SSL_CERT_FILE is set at startup (already fixed in entry script)
 
 ### Notes
 
-- Building takes some time, especially on Windows
+- **Linux x86_64** and **Linux ARM64** are built in `python:3.11-bullseye` container (Debian 11, GLIBC 2.31, runs on Ubuntu 20.04+)
+- Building takes some time
 - Make sure to update the version number in `pyproject.toml` before pushing a tag
 - Release will automatically extract version number from tag name (removing `v` prefix)
