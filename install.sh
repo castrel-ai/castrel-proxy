@@ -11,7 +11,7 @@
 
 set -e
 
-REPO="stallone-ss/castrel-proxy"
+REPO="castrel-ai/castrel-proxy"
 BASE_URL="https://github.com/${REPO}"
 INSTALL_DIR="${CASTREL_INSTALL_DIR:-/usr/local/bin}"
 # Expand ~ to $HOME for user install (e.g. CASTREL_INSTALL_DIR=~/.local/bin)
