@@ -7,7 +7,7 @@
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -102,6 +102,24 @@ class Config:
             raise ConfigError(f"配置文件格式错误: {e}")
         except Exception as e:
             raise ConfigError(f"加载配置失败: {e}")
+
+    def load_optional(self) -> Dict[str, Any]:
+        """
+        加载可选配置（不校验配对必填字段）。
+
+        适用于读取非核心配置（如交互执行参数），
+        当配置文件不存在或格式异常时返回空字典，不抛出异常。
+        """
+        if not self.config_file.exists():
+            return {}
+        try:
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                if isinstance(data, dict):
+                    return data
+                return {}
+        except Exception:
+            return {}
     
     def exists(self) -> bool:
         """
@@ -147,6 +165,28 @@ class Config:
     def get_workspace_id(self) -> str:
         """获取工作区ID"""
         return self.load()['workspace_id']
+
+    def get_interactive_prompt_patterns(self) -> List[str]:
+        """获取交互式命令等待输入的提示词正则列表（可选配置）"""
+        data = self.load_optional()
+        interactive_cfg = data.get("interactive", {})
+        patterns = interactive_cfg.get("prompt_patterns", [])
+        if not isinstance(patterns, list):
+            return []
+        result: List[str] = []
+        for item in patterns:
+            if isinstance(item, str) and item.strip():
+                result.append(item.strip())
+        return result
+
+    def get_interactive_silence_timeout_ms(self) -> int:
+        """获取 maybe_waiting_input 的静默超时阈值（毫秒）"""
+        data = self.load_optional()
+        interactive_cfg = data.get("interactive", {})
+        value = interactive_cfg.get("silence_timeout_ms", 6000)
+        if isinstance(value, int) and 1000 <= value <= 60000:
+            return value
+        return 6000
 
 
 # 全局配置实例

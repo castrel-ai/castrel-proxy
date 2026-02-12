@@ -16,6 +16,7 @@ import aiohttp
 
 from bridge import document_operations
 from bridge.executor import get_executor
+from bridge.interactive_executor import get_interactive_executor
 from bridge.mcp_manager import get_mcp_manager
 
 # 配置日志
@@ -49,6 +50,7 @@ class WebSocketClient:
         self.workspace_id = workspace_id
         self.reconnect_interval = reconnect_interval
         self.executor = get_executor()
+        self.interactive_executor = get_interactive_executor()
         self.mcp_manager = get_mcp_manager()
         self.running = False
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -133,6 +135,38 @@ class WebSocketClient:
                 server_name=server_name,
                 tool_name=tool_name,
                 arguments=arguments,
+            )
+
+        elif message_type == "local_interactive_call":
+            data = message.get("data", {})
+            action = data.get("action", "")
+            interactive_session_id = data.get("interactive_session_id")
+            command = data.get("command")
+            args = data.get("args")
+            cwd = data.get("cwd")
+            input_text = data.get("input_text")
+            last_stdout_seq = data.get("last_stdout_seq", 0)
+            last_stderr_seq = data.get("last_stderr_seq", 0)
+            wait_ms = data.get("wait_ms", 0)
+            max_output_bytes = data.get("max_output_bytes", 65536)
+
+            logger.info(
+                f"[CLIENT-INTERACTIVE-CALL] Interactive call received: message_id={message_id}, "
+                f"action={action}, interactive_session_id={interactive_session_id}, command={command}, "
+                f"client_id={self.client_id}"
+            )
+            return await self._execute_local_interactive(
+                message_id=message_id,
+                action=action,
+                interactive_session_id=interactive_session_id,
+                command=command,
+                args=args,
+                cwd=cwd,
+                input_text=input_text,
+                last_stdout_seq=last_stdout_seq,
+                last_stderr_seq=last_stderr_seq,
+                wait_ms=wait_ms,
+                max_output_bytes=max_output_bytes,
             )
 
         elif message_type == "doc_read_call":
@@ -435,7 +469,6 @@ class WebSocketClient:
                     "result": result,
                 },
             }
-
         except Exception as e:
             elapsed = time.time() - start_time
             logger.error(
@@ -453,6 +486,86 @@ class WebSocketClient:
                     "tool_name": tool_name,
                     "result": None,
                     "error": f"执行 MCP 工具失败: {str(e)}",
+                },
+            }
+
+    async def _execute_local_interactive(
+        self,
+        message_id: str,
+        action: str,
+        interactive_session_id: Optional[str] = None,
+        command: Optional[str] = None,
+        args: Optional[list] = None,
+        cwd: Optional[str] = None,
+        input_text: Optional[str] = None,
+        last_stdout_seq: int = 0,
+        last_stderr_seq: int = 0,
+        wait_ms: int = 0,
+        max_output_bytes: int = 65536,
+    ) -> dict:
+        start_time = time.time()
+        try:
+            if action == "start":
+                if not command:
+                    raise ValueError("command is required for start action")
+                full_command = command
+                if args:
+                    full_command = f"{command} {' '.join(args)}"
+                payload = await self.interactive_executor.start_session(command=full_command, cwd=cwd)
+            elif action == "input":
+                if not interactive_session_id:
+                    raise ValueError("interactive_session_id is required for input action")
+                payload = await self.interactive_executor.send_input(
+                    session_id=interactive_session_id,
+                    input_text=input_text or "",
+                )
+            elif action == "poll":
+                if not interactive_session_id:
+                    raise ValueError("interactive_session_id is required for poll action")
+                payload = await self.interactive_executor.poll(
+                    session_id=interactive_session_id,
+                    last_stdout_seq=last_stdout_seq,
+                    last_stderr_seq=last_stderr_seq,
+                    wait_ms=wait_ms,
+                    max_output_bytes=max_output_bytes,
+                )
+            elif action == "stop":
+                if not interactive_session_id:
+                    raise ValueError("interactive_session_id is required for stop action")
+                payload = await self.interactive_executor.stop_session(
+                    session_id=interactive_session_id,
+                    force=False,
+                )
+            else:
+                raise ValueError(f"unknown interactive action: {action}")
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[CLIENT-INTERACTIVE-SUCCESS] Interactive action completed: message_id={message_id}, "
+                f"action={action}, elapsed={elapsed:.2f}s, state={payload.get('state')}, client_id={self.client_id}"
+            )
+            return {
+                "id": message_id,
+                "type": "local_interactive_result",
+                "success": True,
+                "data": payload,
+            }
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-INTERACTIVE-ERROR] Interactive action failed: message_id={message_id}, "
+                f"action={action}, error={e}, elapsed={elapsed:.2f}s, client_id={self.client_id}",
+                exc_info=True,
+            )
+            return {
+                "id": message_id,
+                "type": "local_interactive_result",
+                "success": False,
+                "data": {
+                    "session_id": interactive_session_id,
+                    "state": "error",
+                    "exit_code": None,
+                    "error": f"interactive action failed: {str(e)}",
                 },
             }
 
