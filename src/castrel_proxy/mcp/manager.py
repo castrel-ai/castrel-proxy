@@ -14,12 +14,53 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 logger = logging.getLogger(__name__)
 
 
-def convert_config_to_langchain_format(config_data: dict) -> dict:
+def _detect_transport(name: str, server_config: dict) -> str:
     """
-    Convert configuration to langchain-mcp-adapters format
+    Auto-detect transport type from server configuration fields.
+
+    Priority: transport > type > auto-detect by command/url fields.
+    Compatible with Claude Desktop, Cursor, VS Code, Claude Code SDK, OpenAI Codex.
 
     Args:
-        config_data: Original configuration data
+        name: Server name (for error messages)
+        server_config: Server configuration dict
+
+    Returns:
+        Detected transport type: 'stdio', 'http', or 'sse'
+
+    Raises:
+        ValueError: When transport cannot be determined
+    """
+    transport = server_config.get("transport") or server_config.get("type")
+
+    if transport:
+        if transport in ("stdio", "http", "sse"):
+            return transport
+        raise ValueError(
+            f"Configuration error for server '{name}': Unknown transport type '{transport}'. "
+            f"Supported: 'stdio', 'http', 'sse'"
+        )
+
+    if server_config.get("command"):
+        return "stdio"
+    if server_config.get("url"):
+        return "http"
+
+    raise ValueError(
+        f"Configuration error for server '{name}': Cannot determine transport type. "
+        f"Provide 'command' (for local stdio) or 'url' (for remote http/sse)."
+    )
+
+
+def convert_config_to_langchain_format(config_data: dict) -> dict:
+    """
+    Convert configuration to langchain-mcp-adapters format.
+
+    Supports all major MCP config formats (Claude Desktop, Cursor, VS Code, etc.)
+    by auto-detecting transport from command/url fields.
+
+    Args:
+        config_data: Original configuration data (mcpServers dict)
 
     Returns:
         dict: Configuration in langchain format
@@ -30,64 +71,29 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
     langchain_config = {}
 
     for name, server_config in config_data.items():
-        # Validate required transport key
-        if "transport" not in server_config:
-            error_msg = (
-                f"Configuration error for server '{name}': Missing 'transport' key. "
-                f"Each server must include 'transport' with one of: 'stdio', 'sse', 'http'. "
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        transport = server_config.get("transport")
+        transport = _detect_transport(name, server_config)
 
         if transport == "stdio":
-            # stdio type: use command and args
             if not server_config.get("command"):
-                error_msg = f"Configuration error for server '{name}': Missing 'command' for stdio transport"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
+                raise ValueError(f"Configuration error for server '{name}': Missing 'command' for stdio transport")
 
-            langchain_config[name] = {
+            entry = {
                 "transport": "stdio",
-                "command": server_config.get("command"),
+                "command": server_config["command"],
                 "args": server_config.get("args", []),
             }
-            # Add environment variables if present
             if server_config.get("env"):
-                langchain_config[name]["env"] = server_config.get("env")
-
-        elif transport == "http":
-            # http type: use url
-            if not server_config.get("url"):
-                error_msg = f"Configuration error for server '{name}': Missing 'url' for http transport"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-
-            langchain_config[name] = {
-                "transport": "http",
-                "url": server_config.get("url"),
-            }
-
-        elif transport == "sse":
-            # sse type: use url
-            if not server_config.get("url"):
-                error_msg = f"Configuration error for server '{name}': Missing 'url' for sse transport"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-
-            langchain_config[name] = {
-                "transport": "sse",
-                "url": server_config.get("url"),
-            }
+                entry["env"] = server_config["env"]
+            langchain_config[name] = entry
 
         else:
-            error_msg = (
-                f"Configuration error for server '{name}': Unknown transport type '{transport}'. "
-                f"Supported transports: 'stdio', 'http', 'sse'"
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+            if not server_config.get("url"):
+                raise ValueError(f"Configuration error for server '{name}': Missing 'url' for {transport} transport")
+
+            langchain_config[name] = {
+                "transport": transport,
+                "url": server_config["url"],
+            }
 
     return langchain_config
 
@@ -115,7 +121,7 @@ class MCPManager:
         Load MCP configuration
 
         Returns:
-            Dict: Configuration dictionary in langchain format
+            Dict: Configuration dictionary (raw mcpServers content)
         """
         if not self.config_file.exists():
             logger.warning(f"MCP configuration file does not exist: {self.config_file}")
@@ -133,6 +139,18 @@ class MCPManager:
         except Exception as e:
             logger.error(f"Failed to load MCP configuration: {e}")
             return {}
+
+    def get_raw_configs(self) -> Dict[str, Dict]:
+        """
+        Get raw MCP server configurations for reporting.
+
+        Reads mcp.json and returns each server's config as-is,
+        without connecting to MCP servers or fetching tools.
+
+        Returns:
+            Dict mapping server name to its raw config dict.
+        """
+        return self.load_config()
 
     def get_server_list(self) -> List[Dict]:
         """
@@ -152,10 +170,14 @@ class MCPManager:
             mcpServers = data.get("mcpServers", {})
 
             for name, config in mcpServers.items():
+                try:
+                    transport = _detect_transport(name, config)
+                except ValueError:
+                    transport = "unknown"
                 servers.append(
                     {
                         "name": name,
-                        "transport": config.get("transport", "stdio"),
+                        "transport": transport,
                         "command": config.get("command", ""),
                         "args": config.get("args", []),
                         "url": config.get("url", ""),
@@ -259,6 +281,56 @@ class MCPManager:
         else:
             logger.info(f"Retrieved {total_count} tool(s) from {len(result)} server(s)")
 
+        return result
+
+    async def get_tools_schema(self) -> Dict[str, List[Dict]]:
+        """
+        Get JSON-serializable tool schemas from all connected MCP servers.
+
+        Returns actual tool definitions (name, description, inputSchema)
+        so the AI knows what parameters each tool requires.
+
+        Returns:
+            Dict mapping server name to list of tool schema dicts.
+        """
+        if not self.client:
+            logger.warning("MCP client not initialized, cannot fetch tool schemas")
+            return {}
+
+        result = {}
+        total_count = 0
+
+        for server_name in self.server_configs:
+            try:
+                tools = await self.client.get_tools(server_name=server_name)
+                tool_schemas = []
+                for tool in tools:
+                    schema: Dict = {
+                        "name": tool.name,
+                        "description": tool.description or "",
+                    }
+                    args_schema = getattr(tool, "args_schema", None)
+                    if args_schema is not None:
+                        if isinstance(args_schema, dict):
+                            schema["inputSchema"] = args_schema
+                        elif hasattr(args_schema, "model_json_schema"):
+                            schema["inputSchema"] = args_schema.model_json_schema()
+                        elif hasattr(args_schema, "schema"):
+                            schema["inputSchema"] = args_schema.schema()
+                        else:
+                            schema["inputSchema"] = {}
+                    else:
+                        schema["inputSchema"] = {}
+                    tool_schemas.append(schema)
+
+                total_count += len(tool_schemas)
+                result[server_name] = tool_schemas
+                logger.info(f"Retrieved schema for {len(tool_schemas)} tool(s) from '{server_name}'")
+
+            except Exception as e:
+                logger.warning(f"Failed to get tool schemas from '{server_name}': {e}")
+
+        logger.info(f"Total tool schemas retrieved: {total_count} from {len(result)} server(s)")
         return result
 
     async def disconnect_all(self):

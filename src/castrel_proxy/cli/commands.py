@@ -120,40 +120,60 @@ def pair(
         typer.secho("✓ Pairing successful!", fg=typer.colors.GREEN)
         typer.echo(f"Configuration saved to: {config.config_file}")
 
-        # Try to load and send MCP tools information
-        typer.echo("\nLoading MCP services...")
+        # Try to load and send MCP tools + skills information
+        typer.echo("\nLoading MCP services and skills...")
         try:
             mcp_manager = get_mcp_manager()
+            from ..skills.manager import get_skills_manager
+            skills_manager = get_skills_manager()
 
-            # Asynchronously connect to MCP and get tools
-            async def sync_mcp_tools():
-                # Connect all MCP services
-                count = await mcp_manager.connect_all()
-                if count == 0:
-                    typer.echo("No MCP services configured, not registering MCP info")
-                    await api_client._send_client_info(server_url, client_id, code, workspace_id, {})
+            async def sync_client_capabilities():
+                skills = skills_manager.scan_skills()
+                if skills:
+                    typer.echo(f"Discovered {len(skills)} skill(s)")
+                else:
+                    typer.echo("No skills found")
+
+                raw_configs = mcp_manager.get_raw_configs()
+                if not raw_configs:
+                    typer.echo("No MCP services configured")
+                    await api_client._send_client_info(
+                        server_url, client_id, code, workspace_id, {}, skills=skills or None,
+                    )
+                    typer.secho("✓ Client capabilities synchronized", fg=typer.colors.GREEN)
                     return
 
-                typer.echo(f"Connected to {count} MCP service(s)")
+                typer.echo(f"Discovered {len(raw_configs)} MCP server(s)")
 
-                # Get all tools
-                tools = await mcp_manager.get_all_tools()
-                typer.echo(f"Retrieved {len(tools)} tool(s)")
+                typer.echo("\nConnecting to MCP servers to fetch tool schemas...")
+                try:
+                    mcp_count = await mcp_manager.connect_all()
+                    if mcp_count > 0:
+                        mcp_tools = await mcp_manager.get_tools_schema()
+                        tool_count = sum(len(v) for v in mcp_tools.values())
+                        typer.secho(f"✓ Retrieved {tool_count} tool(s) from {len(mcp_tools)} server(s)", fg=typer.colors.GREEN)
+                    else:
+                        mcp_tools = raw_configs
+                        typer.secho("⚠ No MCP connections established, using raw configs", fg=typer.colors.YELLOW)
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    typer.secho(f"⚠ Failed to fetch tool schemas: {e}", fg=typer.colors.YELLOW)
+                    typer.echo("Falling back to raw configurations")
+                    mcp_tools = raw_configs
 
-                # Send to server
-                if tools:
-                    typer.echo("Sending MCP tools information to server...")
-                    await api_client._send_client_info(server_url, client_id, code, workspace_id, tools)
-                    typer.secho("✓ MCP tools information synchronized", fg=typer.colors.GREEN)
-
-                # Disconnect MCP connections
+                typer.echo("Sending client capabilities to server...")
+                await api_client._send_client_info(
+                    server_url, client_id, code, workspace_id, mcp_tools, skills=skills or None,
+                )
+                typer.secho("✓ Client capabilities synchronized", fg=typer.colors.GREEN)
                 await mcp_manager.disconnect_all()
 
-            asyncio.run(sync_mcp_tools())
+            asyncio.run(sync_client_capabilities())
 
         except Exception as e:
-            typer.secho(f"⚠ MCP synchronization failed: {e}", fg=typer.colors.YELLOW)
-            typer.echo("Hint: You can manually synchronize MCP information later")
+            typer.secho(f"⚠ Capabilities synchronization failed: {e}", fg=typer.colors.YELLOW)
+            typer.echo("Hint: You can manually synchronize later with 'castrel-proxy mcp_sync' or 'castrel-proxy skills_sync'")
 
         typer.echo("\nHint: Use 'castrel-proxy start' to start bridge service")
 
@@ -542,50 +562,107 @@ def mcp_sync():
         mcp_manager = get_mcp_manager()
         api_client = get_api_client()
 
-        # Asynchronously synchronize MCP tools
         async def sync_mcp_tools():
-            # Connect all MCP services
-            typer.echo("Connecting to MCP services...")
-            count = await mcp_manager.connect_all()
+            typer.echo("Reading MCP configurations...")
+            raw_configs = mcp_manager.get_raw_configs()
 
-            if count == 0:
-                typer.secho("✗ No available MCP services", fg=typer.colors.YELLOW)
+            if not raw_configs:
+                typer.secho("✗ No MCP services configured", fg=typer.colors.YELLOW)
                 typer.echo(f"Config file: {mcp_manager.config_file}")
                 typer.echo("Hint: Use 'castrel-proxy mcp-list' to view configuration")
                 return
 
-            typer.secho(f"✓ Connected to {count} MCP service(s)", fg=typer.colors.GREEN)
+            typer.secho(f"✓ Discovered {len(raw_configs)} MCP server(s)", fg=typer.colors.GREEN)
 
-            # Get all tools
-            typer.echo("\nRetrieving tools information...")
-            tools = await mcp_manager.get_all_tools()
+            typer.echo("\nMCP servers overview:")
+            for name, cfg in raw_configs.items():
+                cmd = cfg.get("command", cfg.get("url", ""))
+                typer.echo(f"  - {name}: {cmd}")
 
-            # Calculate total tool count
-            total_tools = sum(len(tool_list) for tool_list in tools.values())
-            typer.secho(f"✓ Retrieved {total_tools} tool(s)", fg=typer.colors.GREEN)
+            typer.echo("\nConnecting to MCP servers to fetch tool schemas...")
+            try:
+                mcp_count = await mcp_manager.connect_all()
+                if mcp_count > 0:
+                    mcp_tools = await mcp_manager.get_tools_schema()
+                    tool_count = sum(len(v) for v in mcp_tools.values())
+                    typer.secho(f"✓ Retrieved {tool_count} tool(s) from {len(mcp_tools)} server(s)", fg=typer.colors.GREEN)
+                else:
+                    mcp_tools = raw_configs
+                    typer.secho("⚠ No MCP connections established, using raw configs", fg=typer.colors.YELLOW)
+            except SystemExit:
+                raise
+            except Exception as e:
+                typer.secho(f"⚠ Failed to fetch tool schemas: {e}", fg=typer.colors.YELLOW)
+                typer.echo("Falling back to raw configurations")
+                mcp_tools = raw_configs
 
-            # Display tools overview
-            if tools:
-                typer.echo("\nTools overview:")
-                for server, tool_list in tools.items():
-                    typer.echo(f"  {server}: {len(tool_list)} tool(s)")
-                    for tool in tool_list[:3]:  # Only display first 3
-                        typer.echo(f"    - {tool['name']}")
-                    if len(tool_list) > 3:
-                        typer.echo(f"    ... and {len(tool_list) - 3} more")
-
-            # Send to server
-            if tools:
-                typer.echo("\nSending to server...")
-                await api_client._send_client_info(server_url, client_id, verification_code, workspace_id, tools)
-                typer.secho("✓ MCP tools information synchronized", fg=typer.colors.GREEN)
-            else:
-                typer.secho("⚠ No tools to synchronize", fg=typer.colors.YELLOW)
-
-            # Disconnect MCP connections
+            typer.echo("\nSending to server...")
+            await api_client._send_client_info(server_url, client_id, verification_code, workspace_id, mcp_tools)
+            typer.secho("✓ MCP tool schemas synchronized", fg=typer.colors.GREEN)
             await mcp_manager.disconnect_all()
 
         asyncio.run(sync_mcp_tools())
+
+    except ConfigError as e:
+        typer.secho(f"✗ {e}", fg=typer.colors.RED, err=True)
+        typer.echo("Hint: Please pair first using 'castrel-proxy pair' command", err=True)
+        raise typer.Exit(1)
+    except (NetworkError, APIError) as e:
+        typer.secho(f"✗ Synchronization failed: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.secho(f"✗ Unknown error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def skills_sync():
+    """
+    Synchronize skills information to server
+    """
+    config = get_config()
+
+    try:
+        config_data = config.load()
+        server_url = config_data["server_url"]
+        client_id = config_data["client_id"]
+        verification_code = config_data["verification_code"]
+        workspace_id = config_data["workspace_id"]
+
+        typer.secho("=== Synchronizing Skills ===", bold=True)
+        typer.echo(f"Server: {server_url}")
+        typer.echo(f"Client ID: {client_id}")
+        typer.echo(f"Workspace ID: {workspace_id}\n")
+
+        from ..skills.manager import get_skills_manager
+        skills_manager = get_skills_manager()
+        api_client = get_api_client()
+
+        skills = skills_manager.scan_skills()
+
+        if not skills:
+            typer.secho("⚠ No skills found", fg=typer.colors.YELLOW)
+            typer.echo(f"Skills directory: {skills_manager.skills_dir}")
+            typer.echo("Hint: Place skill folders with SKILL.md in ~/.castrel/skills/")
+            return
+
+        typer.secho(f"✓ Discovered {len(skills)} skill(s)", fg=typer.colors.GREEN)
+        typer.echo("\nSkills overview:")
+        for name, info in skills.items():
+            desc = info.get("description", "")
+            if len(desc) > 60:
+                desc = desc[:57] + "..."
+            typer.echo(f"  - {name}: {desc}")
+
+        typer.echo("\nSending to server...")
+
+        async def do_sync():
+            await api_client._send_client_info(
+                server_url, client_id, verification_code, workspace_id, {}, skills=skills
+            )
+
+        asyncio.run(do_sync())
+        typer.secho("✓ Skills information synchronized", fg=typer.colors.GREEN)
 
     except ConfigError as e:
         typer.secho(f"✗ {e}", fg=typer.colors.RED, err=True)

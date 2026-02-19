@@ -21,6 +21,7 @@ from ..core.interactive_executor import get_interactive_executor
 from ..core.openclaw import OpenClawChecker
 from ..core.config import get_config
 from ..mcp.manager import get_mcp_manager
+from ..skills.manager import get_skills_manager
 from ..security.whitelist import get_whitelist_file_path, is_command_allowed
 
 # Configure logging
@@ -66,6 +67,11 @@ class WebSocketClient:
         self.openclaw_check_task: Optional[asyncio.Task] = None
         self.openclaw_check_interval = 60.0  # OpenClaw check interval (seconds)
         self.last_openclaw_status = None  # Track last status to avoid duplicate notifications
+        # Capabilities sync related
+        self.skills_manager = get_skills_manager()
+        self.capabilities_sync_task: Optional[asyncio.Task] = None
+        self.capabilities_sync_interval = 60.0  # Capabilities sync interval (seconds)
+        self._last_capabilities_hash: str = ""
 
     def _get_ws_url(self) -> str:
         """Get WebSocket URL"""
@@ -373,6 +379,82 @@ class WebSocketClient:
                 break
 
         logger.info(f"[CLIENT-HEARTBEAT-STOP] Heartbeat task stopped: client_id={self.client_id}")
+
+    async def _send_capabilities_sync(self, force: bool = False) -> bool:
+        """
+        Scan skills and MCP raw configs, send capabilities_sync if changed.
+
+        Args:
+            force: If True, send even if hash hasn't changed (used for initial sync).
+
+        Returns:
+            bool: True if message was sent.
+        """
+        try:
+            skills = self.skills_manager.scan_skills()
+            skills_hash = self.skills_manager.get_skills_hash(skills)
+
+            mcp_tools = await self.mcp_manager.get_tools_schema()
+            if not mcp_tools:
+                mcp_tools = self.mcp_manager.get_raw_configs()
+                logger.debug("[CLIENT-CAP-SYNC] MCP client not ready, using raw configs as fallback")
+
+            import hashlib
+            combined = f"{skills_hash}:{json.dumps(mcp_tools, sort_keys=True, default=str)}"
+            capabilities_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+            if not force and capabilities_hash == self._last_capabilities_hash:
+                logger.debug(f"[CLIENT-CAP-SYNC] No changes detected, skipping sync")
+                return False
+
+            msg = {
+                "type": "capabilities_sync",
+                "id": str(uuid.uuid4()),
+                "timestamp": int(time.time() * 1000),
+                "data": {
+                    "skills": skills,
+                    "mcp_tools": mcp_tools,
+                    "capabilities_hash": capabilities_hash,
+                },
+            }
+
+            if self.ws and not self.ws.closed:
+                await self.ws.send_json(msg)
+                self._last_capabilities_hash = capabilities_hash
+                logger.info(
+                    f"[CLIENT-CAP-SYNC] Capabilities synced: skills={len(skills)}, "
+                    f"mcp_servers={len(mcp_tools)}, hash={capabilities_hash}, force={force}"
+                )
+                return True
+            else:
+                logger.warning(f"[CLIENT-CAP-SYNC] WebSocket not connected, skipping sync")
+                return False
+
+        except Exception as e:
+            logger.error(f"[CLIENT-CAP-SYNC-ERROR] Failed to sync capabilities: {e}", exc_info=True)
+            return False
+
+    async def _capabilities_sync_loop(self):
+        """Periodically scan and sync capabilities (skills + MCP tools)"""
+        logger.info(
+            f"[CLIENT-CAP-SYNC-START] Capabilities sync task started: "
+            f"interval={self.capabilities_sync_interval}s, client_id={self.client_id}"
+        )
+
+        while self.running and self.ws and not self.ws.closed:
+            try:
+                await asyncio.sleep(self.capabilities_sync_interval)
+                await self._send_capabilities_sync(force=False)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(
+                    f"[CLIENT-CAP-SYNC-ERROR] Error in capabilities sync loop: {e}",
+                    exc_info=True,
+                )
+                break
+
+        logger.info(f"[CLIENT-CAP-SYNC-STOP] Capabilities sync task stopped: client_id={self.client_id}")
 
     async def _perform_openclaw_check(self) -> dict:
         """
@@ -1307,6 +1389,14 @@ class WebSocketClient:
                     f"client_id={self.client_id}"
                 )
 
+            # Send initial capabilities sync and start periodic task
+            await self._send_capabilities_sync(force=True)
+            self.capabilities_sync_task = asyncio.create_task(self._capabilities_sync_loop())
+            logger.info(
+                f"[CLIENT-CAP-SYNC-TASK] Capabilities sync task started: "
+                f"interval={self.capabilities_sync_interval}s, client_id={self.client_id}"
+            )
+
             return True
 
         except Exception as e:
@@ -1321,6 +1411,16 @@ class WebSocketClient:
     async def disconnect(self):
         """Disconnect WebSocket connection"""
         logger.info(f"[CLIENT-DISCONNECT-START] Starting disconnect process: client_id={self.client_id}")
+
+        # Stop capabilities sync task
+        if self.capabilities_sync_task and not self.capabilities_sync_task.done():
+            logger.debug(f"[CLIENT-DISCONNECT-CAP-SYNC] Cancelling capabilities sync task: client_id={self.client_id}")
+            self.capabilities_sync_task.cancel()
+            try:
+                await self.capabilities_sync_task
+            except asyncio.CancelledError:
+                pass
+            logger.info(f"[CLIENT-DISCONNECT-CAP-SYNC] Capabilities sync task stopped: client_id={self.client_id}")
 
         # Stop OpenClaw check task
         if self.openclaw_check_task and not self.openclaw_check_task.done():
