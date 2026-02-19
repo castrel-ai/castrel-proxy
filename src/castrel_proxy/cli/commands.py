@@ -173,7 +173,7 @@ def pair(
 
         except Exception as e:
             typer.secho(f"⚠ Capabilities synchronization failed: {e}", fg=typer.colors.YELLOW)
-            typer.echo("Hint: You can manually synchronize later with 'castrel-proxy mcp_sync' or 'castrel-proxy skills_sync'")
+            typer.echo("Hint: You can manually synchronize later with 'castrel-proxy mcp-sync' or 'castrel-proxy skills-sync'")
 
         typer.echo("\nHint: Use 'castrel-proxy start' to start bridge service")
 

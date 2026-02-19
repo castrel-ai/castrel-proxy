@@ -75,7 +75,7 @@ class SkillsManager:
 
                 skill_info = self._parse_skill(entry, skill_md)
                 if skill_info:
-                    name = skill_info.pop("name")
+                    name = skill_info["name"]
                     skills[name] = skill_info
 
         except PermissionError as e:
