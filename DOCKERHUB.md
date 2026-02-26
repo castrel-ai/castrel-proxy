@@ -1,7 +1,7 @@
 # Castrel Proxy Docker Image
 
-[![Docker Image Size](https://img.shields.io/docker/image-size/castrel/castrel-proxy/latest)](https://hub.docker.com/r/castrel/castrel-proxy)
-[![Docker Pulls](https://img.shields.io/docker/pulls/castrel/castrel-proxy)](https://hub.docker.com/r/castrel/castrel-proxy)
+[![Docker Image Size](https://img.shields.io/docker/image-size/castrelai/castrel-proxy/latest)](https://hub.docker.com/r/castrelai/castrel-proxy)
+[![Docker Pulls](https://img.shields.io/docker/pulls/castrelai/castrel-proxy)](https://hub.docker.com/r/castrelai/castrel-proxy)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Official Docker image for [Castrel Proxy](https://github.com/castrel-ai/castrel-proxy) - A lightweight remote command execution bridge client with MCP integration.
@@ -24,12 +24,12 @@ Official Docker image for [Castrel Proxy](https://github.com/castrel-ai/castrel-
 ### 1. Pair with Server
 
 ```bash
-docker run --rm castrel/castrel-proxy pair <verification_code> <server_url>
+docker run --rm castrelai/castrel-proxy pair <verification_code> <server_url>
 ```
 
 Example:
 ```bash
-docker run --rm castrel/castrel-proxy pair eyJ0cyI6MTczNTA4ODQwMCwid2lkIjoiZGVmYXVsdCIsInJhbmQiOiIxMjM0NTYifQ https://server.example.com
+docker run --rm castrelai/castrel-proxy pair eyJ0cyI6MTczNTA4ODQwMCwid2lkIjoiZGVmYXVsdCIsInJhbmQiOiIxMjM0NTYifQ https://server.example.com
 ```
 
 ### 2. Run as Background Service
@@ -43,7 +43,7 @@ docker run -d \
   --name castrel-proxy \
   --restart unless-stopped \
   -v castrel-config:/home/castrel/.castrel \
-  castrel/castrel-proxy start --foreground
+  castrelai/castrel-proxy start --foreground
 ```
 
 ### 3. Check Status
@@ -88,16 +88,16 @@ docker stop castrel-proxy
 
 ```bash
 # Show help
-docker run --rm castrel/castrel-proxy --help
+docker run --rm castrelai/castrel-proxy --help
 
 # Pair with server
-docker run --rm castrel/castrel-proxy pair <code> <url>
+docker run --rm castrelai/castrel-proxy pair <code> <url>
 
 # Start in foreground mode
-docker run --rm castrel/castrel-proxy start --foreground
+docker run --rm castrelai/castrel-proxy start --foreground
 
 # Check status
-docker run --rm -v castrel-config:/home/castrel/.castrel castrel/castrel-proxy status
+docker run --rm -v castrel-config:/home/castrel/.castrel castrelai/castrel-proxy status
 ```
 
 ## Configuration
@@ -109,7 +109,7 @@ Configuration is stored in `~/.castrel/` directory. Use a Docker volume to persi
 ```bash
 docker run -d \
   -v castrel-config:/home/castrel/.castrel \
-  castrel/castrel-proxy start --foreground
+  castrelai/castrel-proxy start --foreground
 ```
 
 ### Configuration Files
@@ -128,7 +128,7 @@ Mount your MCP configuration:
 docker run -d \
   -v castrel-config:/home/castrel/.castrel \
   -v /path/to/mcp.json:/home/castrel/.castrel/mcp.json:ro \
-  castrel/castrel-proxy start --foreground
+  castrelai/castrel-proxy start --foreground
 ```
 
 Example `mcp.json`:
@@ -153,7 +153,7 @@ version: '3.8'
 
 services:
   castrel-proxy:
-    image: castrel/castrel-proxy:latest
+    image: castrelai/castrel-proxy:latest
     container_name: castrel-proxy
     restart: unless-stopped
     volumes:
@@ -171,7 +171,7 @@ version: '3.8'
 
 services:
   castrel-proxy:
-    image: castrel/castrel-proxy:latest
+    image: castrelai/castrel-proxy:latest
     container_name: castrel-proxy
     restart: unless-stopped
     network_mode: host
@@ -221,8 +221,7 @@ docker build -t castrel-proxy:local .
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release |
-| `0.1.3` | Specific version |
-| `main` | Latest from main branch |
+| `1.0.6` | Specific version |
 
 ## Architecture
 
@@ -242,7 +241,7 @@ Supported architectures:
 ### Container exits immediately
 Ensure you're pairing first and using `--foreground` flag:
 ```bash
-docker run --rm -v castrel-config:/home/castrel/.castrel castrel/castrel-proxy start --foreground
+docker run --rm -v castrel-config:/home/castrel/.castrel castrelai/castrel-proxy start --foreground
 ```
 
 ### Configuration not persisting
