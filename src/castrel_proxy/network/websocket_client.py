@@ -22,7 +22,7 @@ from ..core.openclaw import OpenClawChecker
 from ..core.config import get_config
 from ..mcp.manager import get_mcp_manager
 from ..skills.manager import get_skills_manager
-from ..security.whitelist import get_whitelist_file_path, is_command_allowed
+# from ..security.whitelist import get_whitelist_file_path, is_command_allowed  # DISABLED: Whitelist mechanism disabled
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -627,31 +627,31 @@ class WebSocketClient:
             else:
                 full_command = command
 
-            # Whitelist check
-            is_allowed, blocked_commands = is_command_allowed(full_command)
-            if not is_allowed:
-                whitelist_path = get_whitelist_file_path()
-                blocked_list = ", ".join(blocked_commands) if blocked_commands else command
-                error_msg = (
-                    f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
-                    f"Please add required commands to whitelist configuration file: {whitelist_path}"
-                )
-                logger.warning(
-                    f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in whitelist: message_id={message_id}, "
-                    f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, "
-                    f"whitelist_path={whitelist_path}, client_id={self.client_id}"
-                )
-                return {
-                    "id": message_id,
-                    "type": "local_tool_result",
-                    "success": False,
-                    "data": {
-                        "exit_code": -3,
-                        "stdout": "",
-                        "stderr": error_msg,
-                        "execution_time": 0.0,
-                    },
-                }
+            # Whitelist check - DISABLED
+            # is_allowed, blocked_commands = is_command_allowed(full_command)
+            # if not is_allowed:
+            #     whitelist_path = get_whitelist_file_path()
+            #     blocked_list = ", ".join(blocked_commands) if blocked_commands else command
+            #     error_msg = (
+            #         f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
+            #         f"Please add required commands to whitelist configuration file: {whitelist_path}"
+            #     )
+            #     logger.warning(
+            #         f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in whitelist: message_id={message_id}, "
+            #         f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, "
+            #         f"whitelist_path={whitelist_path}, client_id={self.client_id}"
+            #     )
+            #     return {
+            #         "id": message_id,
+            #         "type": "local_tool_result",
+            #         "success": False,
+            #         "data": {
+            #             "exit_code": -3,
+            #             "stdout": "",
+            #             "stderr": error_msg,
+            #             "execution_time": 0.0,
+            #         },
+            #     }
 
             logger.info(
                 f"[CLIENT-LOCAL-EXEC-START] Executing local command: message_id={message_id}, "
@@ -723,26 +723,26 @@ class WebSocketClient:
                 if args:
                     full_command = f"{command} {' '.join(args)}"
 
-                # Whitelist check keeps behavior consistent with local_tool_call.
-                is_allowed, blocked_commands = is_command_allowed(full_command)
-                if not is_allowed:
-                    whitelist_path = get_whitelist_file_path()
-                    blocked_list = ", ".join(blocked_commands) if blocked_commands else command
-                    error_msg = (
-                        f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
-                        f"Please add required commands to whitelist configuration file: {whitelist_path}"
-                    )
-                    return {
-                        "id": message_id,
-                        "type": "local_interactive_result",
-                        "success": False,
-                        "data": {
-                            "session_id": None,
-                            "state": "error",
-                            "exit_code": None,
-                            "error": error_msg,
-                        },
-                    }
+                # Whitelist check keeps behavior consistent with local_tool_call. - DISABLED
+                # is_allowed, blocked_commands = is_command_allowed(full_command)
+                # if not is_allowed:
+                #     whitelist_path = get_whitelist_file_path()
+                #     blocked_list = ", ".join(blocked_commands) if blocked_commands else command
+                #     error_msg = (
+                #         f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
+                #         f"Please add required commands to whitelist configuration file: {whitelist_path}"
+                #     )
+                #     return {
+                #         "id": message_id,
+                #         "type": "local_interactive_result",
+                #         "success": False,
+                #         "data": {
+                #             "session_id": None,
+                #             "state": "error",
+                #             "exit_code": None,
+                #             "error": error_msg,
+                #         },
+                #     }
                 payload = await self.interactive_executor.start_session(command=full_command, cwd=cwd)
             elif action == "input":
                 if not interactive_session_id:

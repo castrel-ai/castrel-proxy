@@ -19,7 +19,7 @@ from ..core.daemon import get_daemon_manager
 from ..mcp.manager import get_mcp_manager
 from ..network.api_client import APIError, NetworkError, PairingError, get_api_client
 from ..network.websocket_client import WebSocketClient
-from ..security.whitelist import init_whitelist_file
+# from ..security.whitelist import init_whitelist_file  # DISABLED: Whitelist mechanism disabled
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -113,9 +113,9 @@ def pair(
         # Verification successful, save configuration
         config.save(server_url, code, client_id, workspace_id)
 
-        # Initialize whitelist configuration file
-        whitelist_path = init_whitelist_file()
-        typer.echo(f"Whitelist configuration initialized: {whitelist_path}")
+        # Initialize whitelist configuration file - DISABLED
+        # whitelist_path = init_whitelist_file()
+        # typer.echo(f"Whitelist configuration initialized: {whitelist_path}")
 
         typer.secho("✓ Pairing successful!", fg=typer.colors.GREEN)
         typer.echo(f"Configuration saved to: {config.config_file}")
