@@ -245,26 +245,6 @@ class Config:
         except ConfigError:
             return str(Path.home() / ".openclaw" / "agents")
 
-    def get_interactive_silence_timeout_ms(self) -> int:
-        """Get silence timeout(ms) for maybe_waiting_input detection."""
-        try:
-            config = self.load()
-            timeout_ms = int(config.get("interactive_silence_timeout_ms", 6000))
-            return max(1000, min(timeout_ms, 120000))
-        except (ConfigError, ValueError, TypeError):
-            return 6000
-
-    def get_interactive_prompt_patterns(self) -> list[str]:
-        """Get extra prompt regex patterns for waiting_input detection."""
-        try:
-            config = self.load()
-            patterns = config.get("interactive_prompt_patterns", [])
-            if isinstance(patterns, list):
-                return [str(p) for p in patterns if p]
-            return []
-        except ConfigError:
-            return []
-
 
 # Global configuration instance
 _config = Config()

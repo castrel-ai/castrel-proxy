@@ -10,19 +10,16 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
 from typing import Optional
 
 import aiohttp
 
 from ..operations import document
 from ..core.executor import CommandExecutor
-from ..core.interactive_executor import get_interactive_executor
 from ..core.openclaw import OpenClawChecker
 from ..core.config import get_config
 from ..mcp.manager import get_mcp_manager
-from ..skills.manager import get_skills_manager
-# from ..security.whitelist import get_whitelist_file_path, is_command_allowed  # DISABLED: Whitelist mechanism disabled
+from ..security.whitelist import get_whitelist_file_path, is_command_allowed
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -55,7 +52,6 @@ class WebSocketClient:
         self.workspace_id = workspace_id
         self.reconnect_interval = reconnect_interval
         self.mcp_manager = get_mcp_manager()
-        self.interactive_executor = get_interactive_executor()
         self.running = False
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.session: Optional[aiohttp.ClientSession] = None
@@ -67,11 +63,6 @@ class WebSocketClient:
         self.openclaw_check_task: Optional[asyncio.Task] = None
         self.openclaw_check_interval = 60.0  # OpenClaw check interval (seconds)
         self.last_openclaw_status = None  # Track last status to avoid duplicate notifications
-        # Capabilities sync related
-        self.skills_manager = get_skills_manager()
-        self.capabilities_sync_task: Optional[asyncio.Task] = None
-        self.capabilities_sync_interval = 60.0  # Capabilities sync interval (seconds)
-        self._last_capabilities_hash: str = ""
 
     def _get_ws_url(self) -> str:
         """Get WebSocket URL"""
@@ -106,6 +97,8 @@ class WebSocketClient:
             elapsed: Execution time
             error: Error message
         """
+        from datetime import datetime
+
         try:
             # Create session directory
             home_dir = os.path.expanduser("~")
@@ -121,9 +114,13 @@ class WebSocketClient:
 """
 
             if arguments:
+                import json
+
                 log_entry += f"  ARGUMENTS:\n    {json.dumps(arguments, ensure_ascii=False, indent=2).replace(chr(10), chr(10) + '    ')}\n"
 
             if result:
+                import json
+
                 result_str = json.dumps(result, ensure_ascii=False, indent=2)[:500]  # Limit length
                 log_entry += f"  RESULT:\n    {result_str.replace(chr(10), chr(10) + '    ')}\n"
 
@@ -214,42 +211,6 @@ class WebSocketClient:
                 tool_name=tool_name,
                 session_id=session_id,
                 arguments=arguments,
-            )
-
-        elif message_type == "local_interactive_call":
-            data = message.get("data", {})
-            action = data.get("action", "")
-            interactive_session_id = data.get("interactive_session_id")
-            command = data.get("command")
-            args = data.get("args")
-            cwd = data.get("cwd")
-            input_text = data.get("input_text")
-            last_stdout_seq = data.get("last_stdout_seq", 0)
-            last_stderr_seq = data.get("last_stderr_seq", 0)
-            wait_ms = data.get("wait_ms", 0)
-            max_output_bytes = data.get("max_output_bytes", 65536)
-            rows = data.get("rows", 24)
-            cols = data.get("cols", 80)
-
-            logger.info(
-                f"[CLIENT-INTERACTIVE-CALL] Interactive call received: message_id={message_id}, "
-                f"action={action}, interactive_session_id={interactive_session_id}, command={command}, "
-                f"client_id={self.client_id}"
-            )
-            return await self._execute_local_interactive(
-                message_id=message_id,
-                action=action,
-                interactive_session_id=interactive_session_id,
-                command=command,
-                args=args,
-                cwd=cwd,
-                input_text=input_text,
-                last_stdout_seq=last_stdout_seq,
-                last_stderr_seq=last_stderr_seq,
-                wait_ms=wait_ms,
-                max_output_bytes=max_output_bytes,
-                rows=rows,
-                cols=cols,
             )
 
         elif message_type == "doc_read_call":
@@ -379,82 +340,6 @@ class WebSocketClient:
                 break
 
         logger.info(f"[CLIENT-HEARTBEAT-STOP] Heartbeat task stopped: client_id={self.client_id}")
-
-    async def _send_capabilities_sync(self, force: bool = False) -> bool:
-        """
-        Scan skills and MCP raw configs, send capabilities_sync if changed.
-
-        Args:
-            force: If True, send even if hash hasn't changed (used for initial sync).
-
-        Returns:
-            bool: True if message was sent.
-        """
-        try:
-            skills = self.skills_manager.scan_skills()
-            skills_hash = self.skills_manager.get_skills_hash(skills)
-
-            mcp_tools = await self.mcp_manager.get_tools_schema()
-            if not mcp_tools:
-                mcp_tools = self.mcp_manager.get_raw_configs()
-                logger.debug("[CLIENT-CAP-SYNC] MCP client not ready, using raw configs as fallback")
-
-            import hashlib
-            combined = f"{skills_hash}:{json.dumps(mcp_tools, sort_keys=True, default=str)}"
-            capabilities_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
-
-            if not force and capabilities_hash == self._last_capabilities_hash:
-                logger.debug(f"[CLIENT-CAP-SYNC] No changes detected, skipping sync")
-                return False
-
-            msg = {
-                "type": "capabilities_sync",
-                "id": str(uuid.uuid4()),
-                "timestamp": int(time.time() * 1000),
-                "data": {
-                    "skills": skills,
-                    "mcp_tools": mcp_tools,
-                    "capabilities_hash": capabilities_hash,
-                },
-            }
-
-            if self.ws and not self.ws.closed:
-                await self.ws.send_json(msg)
-                self._last_capabilities_hash = capabilities_hash
-                logger.info(
-                    f"[CLIENT-CAP-SYNC] Capabilities synced: skills={len(skills)}, "
-                    f"mcp_servers={len(mcp_tools)}, hash={capabilities_hash}, force={force}"
-                )
-                return True
-            else:
-                logger.warning(f"[CLIENT-CAP-SYNC] WebSocket not connected, skipping sync")
-                return False
-
-        except Exception as e:
-            logger.error(f"[CLIENT-CAP-SYNC-ERROR] Failed to sync capabilities: {e}", exc_info=True)
-            return False
-
-    async def _capabilities_sync_loop(self):
-        """Periodically scan and sync capabilities (skills + MCP tools)"""
-        logger.info(
-            f"[CLIENT-CAP-SYNC-START] Capabilities sync task started: "
-            f"interval={self.capabilities_sync_interval}s, client_id={self.client_id}"
-        )
-
-        while self.running and self.ws and not self.ws.closed:
-            try:
-                await asyncio.sleep(self.capabilities_sync_interval)
-                await self._send_capabilities_sync(force=False)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(
-                    f"[CLIENT-CAP-SYNC-ERROR] Error in capabilities sync loop: {e}",
-                    exc_info=True,
-                )
-                break
-
-        logger.info(f"[CLIENT-CAP-SYNC-STOP] Capabilities sync task stopped: client_id={self.client_id}")
 
     async def _perform_openclaw_check(self) -> dict:
         """
@@ -627,31 +512,31 @@ class WebSocketClient:
             else:
                 full_command = command
 
-            # Whitelist check - DISABLED
-            # is_allowed, blocked_commands = is_command_allowed(full_command)
-            # if not is_allowed:
-            #     whitelist_path = get_whitelist_file_path()
-            #     blocked_list = ", ".join(blocked_commands) if blocked_commands else command
-            #     error_msg = (
-            #         f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
-            #         f"Please add required commands to whitelist configuration file: {whitelist_path}"
-            #     )
-            #     logger.warning(
-            #         f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in whitelist: message_id={message_id}, "
-            #         f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, "
-            #         f"whitelist_path={whitelist_path}, client_id={self.client_id}"
-            #     )
-            #     return {
-            #         "id": message_id,
-            #         "type": "local_tool_result",
-            #         "success": False,
-            #         "data": {
-            #             "exit_code": -3,
-            #             "stdout": "",
-            #             "stderr": error_msg,
-            #             "execution_time": 0.0,
-            #         },
-            #     }
+            # Whitelist check
+            is_allowed, blocked_commands = is_command_allowed(full_command)
+            if not is_allowed:
+                whitelist_path = get_whitelist_file_path()
+                blocked_list = ", ".join(blocked_commands) if blocked_commands else command
+                error_msg = (
+                    f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
+                    f"Please add required commands to whitelist configuration file: {whitelist_path}"
+                )
+                logger.warning(
+                    f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in whitelist: message_id={message_id}, "
+                    f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, "
+                    f"whitelist_path={whitelist_path}, client_id={self.client_id}"
+                )
+                return {
+                    "id": message_id,
+                    "type": "local_tool_result",
+                    "success": False,
+                    "data": {
+                        "exit_code": -3,
+                        "stdout": "",
+                        "stderr": error_msg,
+                        "execution_time": 0.0,
+                    },
+                }
 
             logger.info(
                 f"[CLIENT-LOCAL-EXEC-START] Executing local command: message_id={message_id}, "
@@ -695,117 +580,6 @@ class WebSocketClient:
                     "stdout": "",
                     "stderr": f"Execute local command失败: {str(e)}",
                     "execution_time": 0.0,
-                },
-            }
-
-    async def _execute_local_interactive(
-        self,
-        message_id: str,
-        action: str,
-        interactive_session_id: Optional[str] = None,
-        command: Optional[str] = None,
-        args: Optional[list] = None,
-        cwd: Optional[str] = None,
-        input_text: Optional[str] = None,
-        last_stdout_seq: int = 0,
-        last_stderr_seq: int = 0,
-        wait_ms: int = 0,
-        max_output_bytes: int = 65536,
-        rows: int = 24,
-        cols: int = 80,
-    ) -> dict:
-        start_time = time.time()
-        try:
-            if action == "start":
-                if not command:
-                    raise ValueError("command is required for start action")
-                full_command = command
-                if args:
-                    full_command = f"{command} {' '.join(args)}"
-
-                # Whitelist check keeps behavior consistent with local_tool_call. - DISABLED
-                # is_allowed, blocked_commands = is_command_allowed(full_command)
-                # if not is_allowed:
-                #     whitelist_path = get_whitelist_file_path()
-                #     blocked_list = ", ".join(blocked_commands) if blocked_commands else command
-                #     error_msg = (
-                #         f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
-                #         f"Please add required commands to whitelist configuration file: {whitelist_path}"
-                #     )
-                #     return {
-                #         "id": message_id,
-                #         "type": "local_interactive_result",
-                #         "success": False,
-                #         "data": {
-                #             "session_id": None,
-                #             "state": "error",
-                #             "exit_code": None,
-                #             "error": error_msg,
-                #         },
-                #     }
-                payload = await self.interactive_executor.start_session(command=full_command, cwd=cwd)
-            elif action == "input":
-                if not interactive_session_id:
-                    raise ValueError("interactive_session_id is required for input action")
-                payload = await self.interactive_executor.send_input(
-                    session_id=interactive_session_id,
-                    input_text=input_text or "",
-                )
-            elif action == "poll":
-                if not interactive_session_id:
-                    raise ValueError("interactive_session_id is required for poll action")
-                payload = await self.interactive_executor.poll(
-                    session_id=interactive_session_id,
-                    last_stdout_seq=last_stdout_seq,
-                    last_stderr_seq=last_stderr_seq,
-                    wait_ms=wait_ms,
-                    max_output_bytes=max_output_bytes,
-                )
-            elif action == "stop":
-                if not interactive_session_id:
-                    raise ValueError("interactive_session_id is required for stop action")
-                payload = await self.interactive_executor.stop_session(
-                    session_id=interactive_session_id,
-                    force=False,
-                )
-            elif action == "resize":
-                if not interactive_session_id:
-                    raise ValueError("interactive_session_id is required for resize action")
-                payload = await self.interactive_executor.resize(
-                    session_id=interactive_session_id,
-                    rows=rows,
-                    cols=cols,
-                )
-            else:
-                raise ValueError(f"unknown interactive action: {action}")
-
-            elapsed = time.time() - start_time
-            logger.info(
-                f"[CLIENT-INTERACTIVE-SUCCESS] Interactive action completed: message_id={message_id}, "
-                f"action={action}, elapsed={elapsed:.2f}s, state={payload.get('state')}, client_id={self.client_id}"
-            )
-            return {
-                "id": message_id,
-                "type": "local_interactive_result",
-                "success": True,
-                "data": payload,
-            }
-        except Exception as e:
-            elapsed = time.time() - start_time
-            logger.error(
-                f"[CLIENT-INTERACTIVE-ERROR] Interactive action failed: message_id={message_id}, "
-                f"action={action}, error={e}, elapsed={elapsed:.2f}s, client_id={self.client_id}",
-                exc_info=True,
-            )
-            return {
-                "id": message_id,
-                "type": "local_interactive_result",
-                "success": False,
-                "data": {
-                    "session_id": interactive_session_id,
-                    "state": "error",
-                    "exit_code": None,
-                    "error": f"interactive action failed: {str(e)}",
                 },
             }
 
@@ -1389,14 +1163,6 @@ class WebSocketClient:
                     f"client_id={self.client_id}"
                 )
 
-            # Send initial capabilities sync and start periodic task
-            await self._send_capabilities_sync(force=True)
-            self.capabilities_sync_task = asyncio.create_task(self._capabilities_sync_loop())
-            logger.info(
-                f"[CLIENT-CAP-SYNC-TASK] Capabilities sync task started: "
-                f"interval={self.capabilities_sync_interval}s, client_id={self.client_id}"
-            )
-
             return True
 
         except Exception as e:
@@ -1411,16 +1177,6 @@ class WebSocketClient:
     async def disconnect(self):
         """Disconnect WebSocket connection"""
         logger.info(f"[CLIENT-DISCONNECT-START] Starting disconnect process: client_id={self.client_id}")
-
-        # Stop capabilities sync task
-        if self.capabilities_sync_task and not self.capabilities_sync_task.done():
-            logger.debug(f"[CLIENT-DISCONNECT-CAP-SYNC] Cancelling capabilities sync task: client_id={self.client_id}")
-            self.capabilities_sync_task.cancel()
-            try:
-                await self.capabilities_sync_task
-            except asyncio.CancelledError:
-                pass
-            logger.info(f"[CLIENT-DISCONNECT-CAP-SYNC] Capabilities sync task stopped: client_id={self.client_id}")
 
         # Stop OpenClaw check task
         if self.openclaw_check_task and not self.openclaw_check_task.done():
