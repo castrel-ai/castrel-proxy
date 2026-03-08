@@ -281,6 +281,23 @@ class WebSocketClient:
                 encoding=encoding,
             )
 
+        elif message_type == "skill_read_call":
+            # Handle skill read call
+            data = message.get("data", {})
+            skill_name = data.get("skill_name", "")
+            session_id = data.get("session_id", "")
+
+            logger.info(
+                f"[CLIENT-SKILL-READ-CALL] Skill read call received: message_id={message_id}, "
+                f"skill_name={skill_name}, session_id={session_id}, client_id={self.client_id}"
+            )
+
+            return await self._execute_skill_read(
+                message_id=message_id,
+                skill_name=skill_name,
+                session_id=session_id,
+            )
+
         elif message_type == "ping":
             # Heartbeat from server, response needed
             logger.debug(f"[CLIENT-PING-RECV] Received ping: message_id={message_id}, client_id={self.client_id}")
@@ -302,6 +319,124 @@ class WebSocketClient:
                 "id": message_id,
                 "type": "error",
                 "error": f"Unknown message type: {message_type}",
+            }
+
+    async def _execute_skill_read(
+            self,
+            message_id: str,
+            skill_name: str,
+            session_id: str,
+    ) -> dict:
+        """
+        Execute skill read
+
+        Args:
+            message_id: 消息ID
+            skill_name: Skill 名称
+            session_id: 聊天Session ID
+
+        Returns:
+            dict: 响应消息，包含 SKILL.md 内容和元数据
+        """
+        start_time = time.time()
+        try:
+            logger.info(
+                f"[CLIENT-SKILL-READ-EXEC-START] Executing skill read: message_id={message_id}, "
+                f"skill_name={skill_name}, session_id={session_id}, client_id={self.client_id}"
+            )
+
+            from ..skills.manager import get_skills_manager
+
+            skills_manager = get_skills_manager()
+            skills = skills_manager.scan_skills()
+
+            if skill_name not in skills:
+                available = list(skills.keys())
+                logger.warning(
+                    f"[CLIENT-SKILL-READ-NOT-FOUND] Skill not found: message_id={message_id}, "
+                    f"skill_name={skill_name}, available={available}, client_id={self.client_id}"
+                )
+                return {
+                    "id": message_id,
+                    "type": "skill_read_result",
+                    "success": False,
+                    "data": {
+                        "error": f"Skill '{skill_name}' not found. Available skills: {available}",
+                    },
+                }
+
+            skill_info = skills[skill_name]
+            skill_path = skill_info.get("skill_path", "")
+
+            # Read SKILL.md content
+            from pathlib import Path
+            skill_md = Path(skill_path) / "SKILL.md"
+            skill_content = None
+            if skill_md.exists():
+                try:
+                    skill_content = skill_md.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning(f"[CLIENT-SKILL-READ-CONTENT-ERROR] Failed to read SKILL.md: {e}")
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[CLIENT-SKILL-READ-EXEC-SUCCESS] Skill read completed: message_id={message_id}, "
+                f"skill_name={skill_name}, elapsed={elapsed:.2f}s, client_id={self.client_id}"
+            )
+
+            # Log to terminal.log
+            self._log_operation(
+                session_id=session_id,
+                operation_type="SKILL_READ",
+                operation=skill_name,
+                arguments=None,
+                result={"skill_path": skill_path},
+                success=True,
+                elapsed=elapsed,
+            )
+
+            return {
+                "id": message_id,
+                "type": "skill_read_result",
+                "success": True,
+                "data": {
+                    "skill_name": skill_info.get("name"),
+                    "description": skill_info.get("description"),
+                    "skill_path": skill_path,
+                    "has_scripts": skill_info.get("has_scripts"),
+                    "has_references": skill_info.get("has_references"),
+                    "has_assets": skill_info.get("has_assets"),
+                    "skill_content": skill_content,
+                },
+            }
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-SKILL-READ-EXEC-ERROR] Skill read execution failed: message_id={message_id}, "
+                f"skill_name={skill_name}, error={e}, elapsed={elapsed:.2f}s, client_id={self.client_id}",
+                exc_info=True,
+            )
+
+            # Log error to terminal.log
+            self._log_operation(
+                session_id=session_id,
+                operation_type="SKILL_READ",
+                operation=skill_name,
+                arguments=None,
+                result=None,
+                success=False,
+                elapsed=elapsed,
+                error=str(e),
+            )
+
+            return {
+                "id": message_id,
+                "type": "skill_read_result",
+                "success": False,
+                "data": {
+                    "error": f"Skill read failed: {str(e)}",
+                },
             }
 
     async def _send_heartbeat(self):
