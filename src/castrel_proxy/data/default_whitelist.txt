@@ -185,6 +185,9 @@ gcloud
 az
 aws
 
+# ========== Openclaw Health Check ==========
+openclaw
+
 # ========== Container Image Tools ==========
 podman
 buildah

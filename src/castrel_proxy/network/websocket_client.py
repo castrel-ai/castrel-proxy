@@ -14,11 +14,11 @@ from typing import Optional
 
 import aiohttp
 
-from ..operations import document
+from ..core.config import get_config
 from ..core.executor import CommandExecutor
 from ..core.openclaw import OpenClawChecker
-from ..core.config import get_config
 from ..mcp.manager import get_mcp_manager
+from ..operations import document
 from ..security.whitelist import get_whitelist_file_path, is_command_allowed
 
 # Configure logging
@@ -29,12 +29,12 @@ class WebSocketClient:
     """WebSocket client"""
 
     def __init__(
-        self,
-        server_url: str,
-        client_id: str,
-        verification_code: str,
-        workspace_id: str,
-        reconnect_interval: float = 5.0,
+            self,
+            server_url: str,
+            client_id: str,
+            verification_code: str,
+            workspace_id: str,
+            reconnect_interval: float = 5.0,
     ):
         """
         初始化 WebSocket client
@@ -74,15 +74,15 @@ class WebSocketClient:
         return f"{ws_url}/api/v1/bridge/ws?client_id={self.client_id}&workspace_id={self.workspace_id}&verification_code={self.verification_code}"
 
     def _log_operation(
-        self,
-        session_id: str,
-        operation_type: str,
-        operation: str,
-        arguments: any = None,
-        result: any = None,
-        success: bool = True,
-        elapsed: float = 0.0,
-        error: str = None,
+            self,
+            session_id: str,
+            operation_type: str,
+            operation: str,
+            arguments: any = None,
+            result: any = None,
+            success: bool = True,
+            elapsed: float = 0.0,
+            error: str = None,
     ):
         """
         Log operation to terminal.log
@@ -281,6 +281,23 @@ class WebSocketClient:
                 encoding=encoding,
             )
 
+        elif message_type == "skill_read_call":
+            # Handle skill read call
+            data = message.get("data", {})
+            skill_name = data.get("skill_name", "")
+            session_id = data.get("session_id", "")
+
+            logger.info(
+                f"[CLIENT-SKILL-READ-CALL] Skill read call received: message_id={message_id}, "
+                f"skill_name={skill_name}, session_id={session_id}, client_id={self.client_id}"
+            )
+
+            return await self._execute_skill_read(
+                message_id=message_id,
+                skill_name=skill_name,
+                session_id=session_id,
+            )
+
         elif message_type == "ping":
             # Heartbeat from server, response needed
             logger.debug(f"[CLIENT-PING-RECV] Received ping: message_id={message_id}, client_id={self.client_id}")
@@ -302,6 +319,124 @@ class WebSocketClient:
                 "id": message_id,
                 "type": "error",
                 "error": f"Unknown message type: {message_type}",
+            }
+
+    async def _execute_skill_read(
+            self,
+            message_id: str,
+            skill_name: str,
+            session_id: str,
+    ) -> dict:
+        """
+        Execute skill read
+
+        Args:
+            message_id: 消息ID
+            skill_name: Skill 名称
+            session_id: 聊天Session ID
+
+        Returns:
+            dict: 响应消息，包含 SKILL.md 内容和元数据
+        """
+        start_time = time.time()
+        try:
+            logger.info(
+                f"[CLIENT-SKILL-READ-EXEC-START] Executing skill read: message_id={message_id}, "
+                f"skill_name={skill_name}, session_id={session_id}, client_id={self.client_id}"
+            )
+
+            from ..skills.manager import get_skills_manager
+
+            skills_manager = get_skills_manager()
+            skills = skills_manager.scan_skills()
+
+            if skill_name not in skills:
+                available = list(skills.keys())
+                logger.warning(
+                    f"[CLIENT-SKILL-READ-NOT-FOUND] Skill not found: message_id={message_id}, "
+                    f"skill_name={skill_name}, available={available}, client_id={self.client_id}"
+                )
+                return {
+                    "id": message_id,
+                    "type": "skill_read_result",
+                    "success": False,
+                    "data": {
+                        "error": f"Skill '{skill_name}' not found. Available skills: {available}",
+                    },
+                }
+
+            skill_info = skills[skill_name]
+            skill_path = skill_info.get("skill_path", "")
+
+            # Read SKILL.md content
+            from pathlib import Path
+            skill_md = Path(skill_path) / "SKILL.md"
+            skill_content = None
+            if skill_md.exists():
+                try:
+                    skill_content = skill_md.read_text(encoding="utf-8")
+                except Exception as e:
+                    logger.warning(f"[CLIENT-SKILL-READ-CONTENT-ERROR] Failed to read SKILL.md: {e}")
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[CLIENT-SKILL-READ-EXEC-SUCCESS] Skill read completed: message_id={message_id}, "
+                f"skill_name={skill_name}, elapsed={elapsed:.2f}s, client_id={self.client_id}"
+            )
+
+            # Log to terminal.log
+            self._log_operation(
+                session_id=session_id,
+                operation_type="SKILL_READ",
+                operation=skill_name,
+                arguments=None,
+                result={"skill_path": skill_path},
+                success=True,
+                elapsed=elapsed,
+            )
+
+            return {
+                "id": message_id,
+                "type": "skill_read_result",
+                "success": True,
+                "data": {
+                    "skill_name": skill_info.get("name"),
+                    "description": skill_info.get("description"),
+                    "skill_path": skill_path,
+                    "has_scripts": skill_info.get("has_scripts"),
+                    "has_references": skill_info.get("has_references"),
+                    "has_assets": skill_info.get("has_assets"),
+                    "skill_content": skill_content,
+                },
+            }
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-SKILL-READ-EXEC-ERROR] Skill read execution failed: message_id={message_id}, "
+                f"skill_name={skill_name}, error={e}, elapsed={elapsed:.2f}s, client_id={self.client_id}",
+                exc_info=True,
+            )
+
+            # Log error to terminal.log
+            self._log_operation(
+                session_id=session_id,
+                operation_type="SKILL_READ",
+                operation=skill_name,
+                arguments=None,
+                result=None,
+                success=False,
+                elapsed=elapsed,
+                error=str(e),
+            )
+
+            return {
+                "id": message_id,
+                "type": "skill_read_result",
+                "success": False,
+                "data": {
+                    "error": f"Skill read failed: {str(e)}",
+                },
             }
 
     async def _send_heartbeat(self):
@@ -369,7 +504,7 @@ class WebSocketClient:
             try:
                 # Perform OpenClaw check
                 status = await self._perform_openclaw_check()
-                
+
                 # If issues detected and status changed, send notification
                 if status.get("status") != "healthy":
                     # Check if status changed (avoid duplicate notifications)
@@ -432,21 +567,21 @@ class WebSocketClient:
                     "details": status.get("details", {}),
                 }
             }
-            
+
             logger.info(
                 f"[CLIENT-OPENCLAW-NOTIFY] Sending OpenClaw notification: "
                 f"status={status.get('status')}, message_id={notification_msg['id']}, "
                 f"client_id={self.client_id}"
             )
-            
+
             # Send message directly
             await self.ws.send_json(notification_msg)
-            
+
             logger.debug(
                 f"[CLIENT-OPENCLAW-NOTIFY] OpenClaw notification sent: "
                 f"message_id={notification_msg['id']}, client_id={self.client_id}"
             )
-            
+
         except Exception as e:
             logger.error(
                 f"[CLIENT-OPENCLAW-NOTIFY-ERROR] Failed to send OpenClaw notification: "
@@ -455,13 +590,13 @@ class WebSocketClient:
             )
 
     async def _execute_local_command(
-        self,
-        message_id: str,
-        command: str,
-        session_id: str,
-        args: list = None,
-        cwd: Optional[str] = None,
-        timeout: int = 300,
+            self,
+            message_id: str,
+            command: str,
+            session_id: str,
+            args: list = None,
+            cwd: Optional[str] = None,
+            timeout: int = 300,
     ) -> dict:
         """
         Execute local command
@@ -584,12 +719,12 @@ class WebSocketClient:
             }
 
     async def _execute_mcp_tool(
-        self,
-        message_id: str,
-        server_name: str,
-        tool_name: str,
-        session_id: str,
-        arguments: dict,
+            self,
+            message_id: str,
+            server_name: str,
+            tool_name: str,
+            session_id: str,
+            arguments: dict,
     ) -> dict:
         """
         Execute MCP tool
@@ -722,11 +857,11 @@ class WebSocketClient:
             }
 
     async def _execute_doc_read(
-        self,
-        message_id: str,
-        file_path: str,
-        session_id: str,
-        encoding: Optional[str] = None,
+            self,
+            message_id: str,
+            file_path: str,
+            session_id: str,
+            encoding: Optional[str] = None,
     ) -> dict:
         """
         Execute document read
@@ -813,13 +948,13 @@ class WebSocketClient:
             }
 
     async def _execute_doc_write(
-        self,
-        message_id: str,
-        file_path: str,
-        session_id: str,
-        content: str,
-        encoding: str = "utf-8",
-        create_dirs: bool = True,
+            self,
+            message_id: str,
+            file_path: str,
+            session_id: str,
+            content: str,
+            encoding: str = "utf-8",
+            create_dirs: bool = True,
     ) -> dict:
         """
         Execute document write
@@ -920,14 +1055,14 @@ class WebSocketClient:
             }
 
     async def _execute_doc_edit(
-        self,
-        message_id: str,
-        file_path: str,
-        session_id: str,
-        operation: str,
-        new_content: str,
-        old_content: Optional[str] = None,
-        encoding: Optional[str] = None,
+            self,
+            message_id: str,
+            file_path: str,
+            session_id: str,
+            operation: str,
+            new_content: str,
+            old_content: Optional[str] = None,
+            encoding: Optional[str] = None,
     ) -> dict:
         """
         Execute document edit

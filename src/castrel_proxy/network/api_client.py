@@ -178,10 +178,16 @@ class APIClient:
         return asyncio.run(self._test_connection_async(server_url))
 
     async def _send_client_info(
-        self, server_url: str, client_id: str, verification_code: str, workspace_id: str, tools: Dict[str, list]
+        self,
+        server_url: str,
+        client_id: str,
+        verification_code: str,
+        workspace_id: str,
+        tools: Dict[str, list],
+        skills: list = None,
     ) -> bool:
         """
-        Asynchronously send MCP tools information to server
+        Asynchronously send client info (MCP tools + skills) to server
 
         Args:
             server_url: Server URL
@@ -189,6 +195,7 @@ class APIClient:
             verification_code: Verification code
             workspace_id: Workspace ID
             tools: MCP tools list, format: {server_name: [tool_name, ...]}
+            skills: Skills metadata list (optional)
 
         Returns:
             bool: True if send successful
@@ -212,6 +219,8 @@ class APIClient:
             "mcp_tools": tools,
             "metadata": get_machine_metadata(),
         }
+        if skills is not None:
+            payload["skills"] = skills
 
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:

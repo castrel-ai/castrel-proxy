@@ -1,0 +1,352 @@
+name: Build PyInstaller Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.1.3)'
+        required: false
+        type: string
+
+jobs:
+  build-linux-x86_64:
+    name: Build Linux x86_64 (Ubuntu 20.04+ / glibc 2.31)
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11-bullseye
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install git
+        run: apt-get update && apt-get install -y git
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Install PyInstaller
+        run: uv pip install pyinstaller
+
+      - name: Create entry script
+        run: |
+          cat > entry_point.py << 'EOF'
+          #!/usr/bin/env python
+          """Entry point for PyInstaller - uses absolute imports"""
+          import sys
+          import os
+
+          # Fix SSL certificates when running as PyInstaller bundle (required for aiohttp HTTPS)
+          if getattr(sys, 'frozen', False):
+              import certifi
+              os.environ['SSL_CERT_FILE'] = certifi.where()
+              os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+          from castrel_proxy.cli.commands import run
+          if __name__ == "__main__":
+              run()
+          EOF
+
+      - name: Build with PyInstaller
+        run: |
+          uv run pyinstaller \
+            --onefile \
+            --name castrel-proxy \
+            --paths src \
+            --hidden-import castrel_proxy.data \
+            --hidden-import castrel_proxy.cli.commands \
+            --hidden-import typer \
+            --hidden-import aiohttp \
+            --hidden-import mcp \
+            --hidden-import langchain_mcp_adapters \
+            --hidden-import file_read_backwards \
+            --hidden-import certifi \
+            --collect-all castrel_proxy \
+            --collect-data certifi \
+            --console \
+            entry_point.py
+
+      - name: Test binary
+        run: |
+          chmod +x ./dist/castrel-proxy
+          ./dist/castrel-proxy --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: castrel-proxy-linux-x86_64
+          path: dist/castrel-proxy
+          retention-days: 30
+
+  build-linux-arm64:
+    name: Build Linux ARM64 (Ubuntu 20.04+ / glibc 2.31)
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: python:3.11-bullseye
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install git
+        run: apt-get update && apt-get install -y git
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Install PyInstaller
+        run: uv pip install pyinstaller
+
+      - name: Create entry script
+        run: |
+          cat > entry_point.py << 'EOF'
+          #!/usr/bin/env python
+          """Entry point for PyInstaller - uses absolute imports"""
+          import sys
+          import os
+
+          # Fix SSL certificates when running as PyInstaller bundle (required for aiohttp HTTPS)
+          if getattr(sys, 'frozen', False):
+              import certifi
+              os.environ['SSL_CERT_FILE'] = certifi.where()
+              os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+          from castrel_proxy.cli.commands import run
+          if __name__ == "__main__":
+              run()
+          EOF
+
+      - name: Build with PyInstaller
+        run: |
+          uv run pyinstaller \
+            --onefile \
+            --name castrel-proxy \
+            --paths src \
+            --hidden-import castrel_proxy.data \
+            --hidden-import castrel_proxy.cli.commands \
+            --hidden-import typer \
+            --hidden-import aiohttp \
+            --hidden-import mcp \
+            --hidden-import langchain_mcp_adapters \
+            --hidden-import file_read_backwards \
+            --hidden-import certifi \
+            --collect-all castrel_proxy \
+            --collect-data certifi \
+            --console \
+            entry_point.py
+
+      - name: Test binary
+        run: |
+          chmod +x ./dist/castrel-proxy
+          ./dist/castrel-proxy --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: castrel-proxy-linux-arm64
+          path: dist/castrel-proxy
+          retention-days: 30
+
+  build-other:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: castrel-proxy-macos-arm64
+            binary_name: castrel-proxy
+          - os: macos-15-intel
+            artifact_name: castrel-proxy-macos-x86_64
+            binary_name: castrel-proxy
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: |
+          uv sync --all-extras
+
+      - name: Install PyInstaller
+        run: |
+          uv pip install pyinstaller
+
+      - name: Create entry script
+        run: |
+          cat > entry_point.py << 'EOF'
+          #!/usr/bin/env python
+          """Entry point for PyInstaller - uses absolute imports"""
+          import sys
+          import os
+
+          # Fix SSL certificates when running as PyInstaller bundle (required for aiohttp HTTPS)
+          if getattr(sys, 'frozen', False):
+              import certifi
+              os.environ['SSL_CERT_FILE'] = certifi.where()
+              os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+          from castrel_proxy.cli.commands import run
+          if __name__ == "__main__":
+              run()
+          EOF
+
+      - name: Build with PyInstaller
+        run: |
+          uv run pyinstaller \
+            --onefile \
+            --name ${{ matrix.binary_name }} \
+            --paths src \
+            --hidden-import castrel_proxy.data \
+            --hidden-import castrel_proxy.cli.commands \
+            --hidden-import typer \
+            --hidden-import aiohttp \
+            --hidden-import mcp \
+            --hidden-import langchain_mcp_adapters \
+            --hidden-import file_read_backwards \
+            --hidden-import certifi \
+            --collect-all castrel_proxy \
+            --collect-data certifi \
+            --console \
+            entry_point.py
+
+      - name: Test binary
+        shell: bash
+        run: |
+          chmod +x ./dist/${{ matrix.binary_name }}
+          ./dist/${{ matrix.binary_name }} --help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.binary_name }}
+          retention-days: 30
+
+  create-release:
+    name: Create Release
+    needs: [build-linux-x86_64, build-linux-arm64, build-other]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Create checksums and prepare release
+        shell: bash
+        run: |
+          cd dist
+          mkdir -p release
+          
+          # Process each artifact directory
+          for artifact_dir in castrel-proxy-*/; do
+            if [ -d "$artifact_dir" ]; then
+              # Get platform name from directory
+              platform_name=$(basename "$artifact_dir")
+              
+              # Find binary file
+              binary_file=$(find "$artifact_dir" -type f -name "castrel-proxy" | head -1)
+              
+              if [ -n "$binary_file" ] && [ -f "$binary_file" ]; then
+                output_name="${platform_name}"
+                
+                # Create checksum
+                shasum -a 256 "$binary_file" > "${binary_file}.sha256"
+                
+                # Copy to release directory and ensure executable permission
+                cp "$binary_file" "release/${output_name}"
+                chmod +x "release/${output_name}"
+                cp "${binary_file}.sha256" "release/${output_name}.sha256"
+              fi
+            fi
+          done
+          
+          ls -lh release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref }}
+          name: Release ${{ steps.get_version.outputs.version }}
+          body: |
+            ## Castrel Proxy ${{ steps.get_version.outputs.version }}
+
+            ### Downloads
+
+            - **Linux x86_64** (Ubuntu 20.04+): `castrel-proxy-linux-x86_64`
+            - **Linux ARM64** (Ubuntu 20.04+): `castrel-proxy-linux-arm64`
+            - **macOS ARM64 (Apple Silicon)**: `castrel-proxy-macos-arm64`
+            - **macOS x86_64 (Intel)**: `castrel-proxy-macos-x86_64`
+
+            ### Installation
+
+            **macOS/Linux:**
+            ```bash
+            # Download the binary for your platform
+            # Add execute permission (if needed)
+            chmod +x castrel-proxy-<platform>
+            
+            # Option 1: Run directly from current directory
+            ./castrel-proxy-<platform> start
+            
+            # Option 2: Move to a directory in your PATH (recommended)
+            sudo mv castrel-proxy-<platform> /usr/local/bin/castrel-proxy
+            castrel-proxy start
+            ```
+
+            ### Checksums
+
+            SHA256 checksums are included for each binary.
+
+            ---
+
+            Full changelog: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md
+          files: |
+            dist/release/*
+          draft: false
+          prerelease: false
