@@ -343,3 +343,41 @@ castrel-bridge-proxy/
 
 MIT
 
+
+## 🛠️ 管理 Skills
+
+### 8. 管理 Skills
+
+**创建 Skill 骨架：**
+```bash
+castrel-bridge-cli skill init my-skill -d "my custom skill"
+```
+
+**查看本地 Skills：**
+```bash
+castrel-bridge-cli skill list -v
+```
+
+**校验 Skill：**
+```bash
+castrel-bridge-cli skill validate my-skill --strict
+```
+
+**打包 / 导入 Skill：**
+```bash
+castrel-bridge-cli skill package my-skill -o /tmp/my-skill.skill
+castrel-bridge-cli skill import /tmp/my-skill.skill
+```
+
+**同步 Skills 到服务端：**
+```bash
+castrel-bridge-cli skill sync
+```
+
+### 9. Skills 同步排障
+
+- `401/403`：先执行 `castrel-bridge-cli pair` 重新配对，并确认验证码和 workspace 一致。
+- `skill_content_pull` 失败且提示 `content_hash` 不匹配：服务端下发内容已变化，重试同步或检查服务端是否缓存旧 hash。
+- 导入失败提示"目录名与 frontmatter name 不一致"：将目录名改成与 `SKILL.md` 中 `name` 完全一致。
+- 导入失败提示"禁止的文件类型"：移除 `.pem/.key/.dll/.so` 等受限文件后再导入。
+- 同步后服务端看不到技能：先确认 `castrel-bridge-cli skill list -v` 有本地技能，再执行 `castrel-bridge-cli mcp-sync` 或 `skill sync`。

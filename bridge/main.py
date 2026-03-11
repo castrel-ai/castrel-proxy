@@ -10,12 +10,15 @@ from bridge.api import APIError, NetworkError, PairingError, get_api_client
 from bridge.client_id import get_client_id
 from bridge.config import ConfigError, get_config
 from bridge.mcp_manager import get_mcp_manager
+from bridge.skill_cli import skill_app
+from bridge.skill_manager import get_skill_manager
 from bridge.websocket_client import WebSocketClient
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
+app.add_typer(skill_app, name="skill")
 
 
 def decode_verification_code(verification_code: str) -> Dict[str, Any]:
@@ -110,6 +113,7 @@ def pair(
         typer.echo("\n正在向服务端注册客户端信息...")
         try:
             mcp_manager = get_mcp_manager()
+            skill_manager = get_skill_manager()
 
             async def register_client_info():
                 tools_payload: Dict[str, Any] = {}
@@ -134,8 +138,19 @@ def pair(
                     except Exception:
                         pass
 
+                # 加载本地 Skills
+                skills_payload = skill_manager.get_skills_for_registration()
+                skill_count = len(skills_payload)
+                if skill_count > 0:
+                    typer.echo(f"发现 {skill_count} 个本地 Skills")
+                else:
+                    typer.echo("未发现本地 Skills")
+
                 typer.echo("正在提交客户端信息到服务端...")
-                await api_client._send_client_info(server_url, client_id, code, workspace_id, tools_payload)
+                await api_client._send_client_info(
+                    server_url, client_id, code, workspace_id, tools_payload,
+                    skills=skills_payload,
+                )
 
             asyncio.run(register_client_info())
             typer.secho("✓ 客户端信息已注册（会话已创建）", fg=typer.colors.GREEN)
@@ -402,51 +417,59 @@ def mcp_sync():
         typer.echo(f"工作区ID: {workspace_id}\n")
 
         mcp_manager = get_mcp_manager()
+        skill_manager = get_skill_manager()
         api_client = get_api_client()
 
         # 异步同步 MCP tools
         async def sync_mcp_tools():
-            # 连接所有 MCP 服务
-            typer.echo("正在连接 MCP 服务...")
-            count = await mcp_manager.connect_all()
+            tools_by_server: Dict[str, Any] = {}
+            try:
+                # 连接所有 MCP 服务
+                typer.echo("正在连接 MCP 服务...")
+                count = await mcp_manager.connect_all()
 
-            if count == 0:
-                typer.secho("✗ 没有可用的 MCP 服务", fg=typer.colors.YELLOW)
-                typer.echo(f"配置文件: {mcp_manager.config_file}")
-                typer.echo("提示: 使用 'castrel-bridge-cli mcp-list' 查看配置")
-                return
+                if count == 0:
+                    typer.secho("✗ 没有可用的 MCP 服务", fg=typer.colors.YELLOW)
+                    typer.echo(f"配置文件: {mcp_manager.config_file}")
+                    typer.echo("提示: 使用 'castrel-bridge-cli mcp-list' 查看配置")
+                    return
 
-            typer.secho(f"✓ 已连接 {count} 个 MCP 服务", fg=typer.colors.GREEN)
+                typer.secho(f"✓ 已连接 {count} 个 MCP 服务", fg=typer.colors.GREEN)
 
-            # 获取所有 tools
-            typer.echo("\n正在获取 tools 信息...")
-            tools_by_server = await mcp_manager.get_all_tools()
-            total_tools = sum(len(v) for v in tools_by_server.values())
-            typer.secho(f"✓ 获取到 {total_tools} 个 tools", fg=typer.colors.GREEN)
+                # 获取所有 tools
+                typer.echo("\n正在获取 tools 信息...")
+                tools_by_server = await mcp_manager.get_all_tools()
+                total_tools = sum(len(v) for v in tools_by_server.values())
+                typer.secho(f"✓ 获取到 {total_tools} 个 tools", fg=typer.colors.GREEN)
 
-            # 显示 tools 概览
-            if tools_by_server:
-                typer.echo("\nTools 概览:")
-                for server, server_tools in tools_by_server.items():
-                    typer.echo(f"  {server}: {len(server_tools)} 个 tools")
-                    for tool in server_tools[:3]:  # 只显示前3个
-                        name = tool.get("name") if isinstance(tool, dict) else str(tool)
-                        typer.echo(f"    - {name}")
-                    if len(server_tools) > 3:
-                        typer.echo(f"    ... 还有 {len(server_tools) - 3} 个")
+                # 显示 tools 概览
+                if tools_by_server:
+                    typer.echo("\nTools 概览:")
+                    for server, server_tools in tools_by_server.items():
+                        typer.echo(f"  {server}: {len(server_tools)} 个 tools")
+                        for tool in server_tools[:3]:  # 只显示前3个
+                            name = tool.get("name") if isinstance(tool, dict) else str(tool)
+                            typer.echo(f"    - {name}")
+                        if len(server_tools) > 3:
+                            typer.echo(f"    ... 还有 {len(server_tools) - 3} 个")
 
-            # 发送到服务端
-            if total_tools > 0:
+                # 同步 tools + skills（保持会话能力完整）
+                skills_payload = skill_manager.get_skills_for_registration()
                 typer.echo("\n正在发送到服务端...")
                 await api_client._send_client_info(
-                    server_url, client_id, verification_code, workspace_id, tools_by_server
+                    server_url,
+                    client_id,
+                    verification_code,
+                    workspace_id,
+                    tools_by_server,
+                    skills=skills_payload,
                 )
-                typer.secho("✓ MCP tools 信息已同步", fg=typer.colors.GREEN)
-            else:
-                typer.secho("⚠ 没有 tools 需要同步", fg=typer.colors.YELLOW)
-
-            # 断开 MCP 连接
-            await mcp_manager.disconnect_all()
+                typer.secho(
+                    f"✓ MCP tools 与 Skills 已同步 (tools: {total_tools}, skills: {len(skills_payload)})",
+                    fg=typer.colors.GREEN,
+                )
+            finally:
+                await mcp_manager.disconnect_all()
 
         asyncio.run(sync_mcp_tools())
 

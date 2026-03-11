@@ -204,6 +204,66 @@ class MCPManager:
             except Exception as e:
                 logger.error(f"断开 MCP 服务失败: {e}")
 
+    def _read_raw_config(self) -> dict:
+        """读取 mcp.json 原始内容"""
+        if not self.config_file.exists():
+            return {"mcpServers": {}}
+        with open(self.config_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _write_raw_config(self, data: dict) -> None:
+        """写入 mcp.json"""
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def install_server(self, name: str, config: dict) -> bool:
+        """
+        安装（新增或更新）一个 MCP Server 配置到 mcp.json。
+        
+        Args:
+            name: MCP Server 名称（唯一标识）
+            config: 配置字典，含 transport/command/args/url/env 等字段
+        Returns:
+            True 表示成功
+        """
+        try:
+            data = self._read_raw_config()
+            data.setdefault("mcpServers", {})[name] = config
+            self._write_raw_config(data)
+            # 重置客户端，下次 tool_call 时重连
+            self.client = None
+            logger.info(f"[MCP-INSTALL] Installed MCP server: {name}")
+            return True
+        except Exception as e:
+            logger.error(f"[MCP-INSTALL] Failed to install {name}: {e}")
+            return False
+
+    def remove_server(self, name: str) -> bool:
+        """
+        从 mcp.json 移除一个 MCP Server 配置。
+        
+        Args:
+            name: MCP Server 名称
+        Returns:
+            True 表示成功（即使 name 不存在也返回 True）
+        """
+        try:
+            data = self._read_raw_config()
+            servers = data.get("mcpServers", {})
+            if name in servers:
+                del servers[name]
+                data["mcpServers"] = servers
+                self._write_raw_config(data)
+                self.client = None
+                logger.info(f"[MCP-REMOVE] Removed MCP server: {name}")
+            else:
+                logger.warning(f"[MCP-REMOVE] Server not found: {name}")
+            return True
+        except Exception as e:
+            logger.error(f"[MCP-REMOVE] Failed to remove {name}: {e}")
+            return False
+
 
 # 全局 MCP 管理器实例
 _mcp_manager = MCPManager()

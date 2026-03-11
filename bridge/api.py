@@ -5,7 +5,7 @@ API 客户端模块
 """
 
 import asyncio
-from typing import Dict
+from typing import Any, Dict, Optional
 
 import aiohttp
 
@@ -191,20 +191,22 @@ class APIClient:
         client_id: str,
         verification_code: str,
         workspace_id: str,
-        tools: Dict
+        tools: Dict[str, Any],
+        skills: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
-        异步发送 MCP tools 信息到服务端
-        
+        异步发送 MCP tools 和 Skills 信息到服务端
+
         Args:
             server_url: 服务端 URL
             client_id: 客户端唯一标识
             verification_code: 验证码
             tools: MCP tools 列表
-        
+            skills: Skills 元数据字典（可选）
+
         Returns:
             bool: 发送成功返回 True
-        
+
         Raises:
             NetworkError: 网络连接失败
             APIError: API 错误
@@ -212,10 +214,10 @@ class APIClient:
         # 确保 URL 格式正确
         if not server_url.startswith(('http://', 'https://')):
             server_url = f'https://{server_url}'
-        
+
         server_url = server_url.rstrip('/')
         endpoint = f'{server_url}/api/v1/bridge/pair/client_info'
-        
+
         # 请求数据
         payload = {
             'client_id': client_id,
@@ -224,6 +226,10 @@ class APIClient:
             'mcp_tools': tools,
             'metadata': get_machine_metadata()
         }
+
+        # 添加 Skills 信息（如果有）
+        if skills is not None:
+            payload['skills'] = skills
         
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
@@ -302,4 +308,3 @@ _api_client = APIClient()
 def get_api_client() -> APIClient:
     """获取全局 API 客户端实例"""
     return _api_client
-

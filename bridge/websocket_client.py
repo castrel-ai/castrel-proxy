@@ -18,6 +18,7 @@ from bridge import document_operations
 from bridge.executor import get_executor
 from bridge.interactive_executor import get_interactive_executor
 from bridge.mcp_manager import get_mcp_manager
+from bridge.skill_sync import SkillSyncManager
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class WebSocketClient:
         self.executor = get_executor()
         self.interactive_executor = get_interactive_executor()
         self.mcp_manager = get_mcp_manager()
+        self.skill_sync = SkillSyncManager()
         self.running = False
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.session: Optional[aiohttp.ClientSession] = None
@@ -94,6 +96,8 @@ class WebSocketClient:
                 f"[CLIENT-CONNECTED] Connection established: session_id={session_id}, "
                 f"message={msg}, client_id={self.client_id}"
             )
+            # 连接成功后自动触发 capabilities_sync
+            asyncio.create_task(self._send_capabilities_sync())
             # 不需要响应
             return None
 
@@ -231,6 +235,80 @@ class WebSocketClient:
                 encoding=encoding,
             )
 
+        elif message_type == "skill_sync_request":
+            # 服务端请求 skill 同步
+            logger.info(
+                f"[CLIENT-SKILL-SYNC-REQ] Skill sync request received: message_id={message_id}, "
+                f"client_id={self.client_id}"
+            )
+            return await self.skill_sync.handle_skill_sync_request(
+                message, self.ws.send_json
+            )
+
+        elif message_type == "skill_content_pull":
+            # 服务端推送 skill 到本地
+            data = message.get("data", {})
+            skill_name = data.get("skill_name", "")
+            content_hash = data.get("content_hash", "")
+            logger.info(
+                f"[CLIENT-SKILL-PULL] Skill content pull received: message_id={message_id}, "
+                f"skill_name={skill_name}, content_hash={content_hash}, client_id={self.client_id}"
+            )
+            return await self.skill_sync.handle_skill_content_pull(message)
+
+        elif message_type == "skill_delete_push":
+            # 服务端指令删除本地 skill
+            data = message.get("data", {})
+            skill_name = data.get("skill_name", "")
+            logger.info(
+                f"[CLIENT-SKILL-DELETE] Skill delete push received: message_id={message_id}, "
+                f"skill_name={skill_name}, client_id={self.client_id}"
+            )
+            return await self.skill_sync.handle_skill_delete_push(message)
+
+        elif message_type == "mcp_install":
+            # 服务端推送 MCP Server 安装指令
+            data = message.get("data", {})
+            name = data.get("name", "")
+            config = data.get("config", {})
+            env = data.get("env", {})
+            logger.info(
+                f"[CLIENT-MCP-INSTALL] MCP install received: message_id={message_id}, "
+                f"name={name}, client_id={self.client_id}"
+            )
+            # 合并 env 到 config
+            if env:
+                config["env"] = env
+            success = self.mcp_manager.install_server(name, config)
+            return {
+                "id": message_id,
+                "type": "mcp_install_result",
+                "data": {
+                    "name": name,
+                    "success": success,
+                    "error": None if success else "安装失败",
+                },
+            }
+
+        elif message_type == "mcp_remove":
+            # 服务端推送 MCP Server 卸载指令
+            data = message.get("data", {})
+            name = data.get("name", "")
+            logger.info(
+                f"[CLIENT-MCP-REMOVE] MCP remove received: message_id={message_id}, "
+                f"name={name}, client_id={self.client_id}"
+            )
+            success = self.mcp_manager.remove_server(name)
+            return {
+                "id": message_id,
+                "type": "mcp_remove_result",
+                "data": {
+                    "name": name,
+                    "success": success,
+                    "error": None if success else "卸载失败",
+                },
+            }
+
         elif message_type == "ping":
             # 服务端发来的心跳，需要响应
             logger.debug(f"[CLIENT-PING-RECV] Received ping: message_id={message_id}, client_id={self.client_id}")
@@ -290,6 +368,34 @@ class WebSocketClient:
                 break
 
         logger.info(f"[CLIENT-HEARTBEAT-STOP] Heartbeat task stopped: client_id={self.client_id}")
+
+    async def _send_capabilities_sync(self):
+        """连接成功后发送 capabilities_sync 消息"""
+        try:
+            # 获取 MCP tools（可能为空）
+            mcp_tools = {}
+            try:
+                mcp_tools = await self.mcp_manager.get_all_tools()
+            except Exception:
+                pass
+
+            message = self.skill_sync.build_capabilities_sync_message(mcp_tools)
+            await self.ws.send_json(message)
+
+            skills_count = len(message.get("data", {}).get("skills", {}))
+            mcp_count = len(message.get("data", {}).get("mcp_tools", {}))
+            logger.info(
+                f"[CLIENT-CAP-SYNC] Sent capabilities sync: "
+                f"skills={skills_count}, mcp_servers={mcp_count}, "
+                f"hash={message['data'].get('capabilities_hash', '')}, "
+                f"client_id={self.client_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[CLIENT-CAP-SYNC-ERROR] Failed to send capabilities sync: error={e}, "
+                f"client_id={self.client_id}",
+                exc_info=True,
+            )
 
     async def _execute_local_command(
         self,

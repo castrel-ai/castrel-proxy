@@ -85,6 +85,42 @@ castrel-proxy logs -n 100
 castrel-proxy logs -f
 ```
 
+## 🛠️ Managing Skills
+
+**Create a skill scaffold:**
+```bash
+castrel-bridge-cli skill init my-skill -d "my custom skill"
+```
+
+**List local skills:**
+```bash
+castrel-bridge-cli skill list -v
+```
+
+**Validate a skill:**
+```bash
+castrel-bridge-cli skill validate my-skill --strict
+```
+
+**Package / Import a skill:**
+```bash
+castrel-bridge-cli skill package my-skill -o /tmp/my-skill.skill
+castrel-bridge-cli skill import /tmp/my-skill.skill
+```
+
+**Sync skills to server:**
+```bash
+castrel-bridge-cli skill sync
+```
+
+### Skill Sync Troubleshooting
+
+- `401/403`: Re-run `castrel-bridge-cli pair` and verify the code and workspace match.
+- `skill_content_pull` fails with `content_hash` mismatch: Server content has changed — retry sync or check if server is caching an old hash.
+- Import fails with "directory name does not match frontmatter name": Rename the directory to exactly match the `name` field in `SKILL.md`.
+- Import fails with "forbidden file type": Remove `.pem/.key/.dll/.so` and other restricted files before importing.
+- Skills not visible on server after sync: Confirm `castrel-bridge-cli skill list -v` shows local skills, then run `castrel-bridge-cli mcp-sync` or `skill sync`.
+
 ## 📖 Documentation
 
 - [Installation Guide](docs/installation.md)
