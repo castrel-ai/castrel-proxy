@@ -43,7 +43,11 @@ class APIClient:
             timeout: Request timeout (seconds)
         """
         self.timeout = aiohttp.ClientTimeout(total=timeout)
-        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
+        # Load system CAs first, then append certifi's bundle.
+        # Using cafile= alone would *replace* the system store, potentially
+        # missing intermediate CAs that are present in the OS but not certifi.
+        self._ssl_context = ssl.create_default_context()
+        self._ssl_context.load_verify_locations(cafile=certifi.where())
 
     def _make_connector(self) -> aiohttp.TCPConnector:
         """Create TCP connector with certifi CA bundle (fixes CentOS 7 / old OpenSSL)"""
