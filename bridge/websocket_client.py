@@ -269,23 +269,25 @@ class WebSocketClient:
         elif message_type == "mcp_install":
             # 服务端推送 MCP Server 安装指令
             data = message.get("data", {})
-            name = data.get("name", "")
-            config = data.get("config", {})
+            item_id = data.get("item_id", "")
+            mcp_config = data.get("mcp_config", {})
             env = data.get("env", {})
             logger.info(
                 f"[CLIENT-MCP-INSTALL] MCP install received: message_id={message_id}, "
-                f"name={name}, client_id={self.client_id}"
+                f"item_id={item_id}, client_id={self.client_id}"
             )
             # 合并 env 到 config
             if env:
-                config["env"] = env
-            success = self.mcp_manager.install_server(name, config)
+                mcp_config = dict(mcp_config)
+                mcp_config["env"] = env
+            success = self.mcp_manager.install_server(item_id, mcp_config)
             return {
                 "id": message_id,
                 "type": "mcp_install_result",
+                "success": success,
                 "data": {
-                    "name": name,
-                    "success": success,
+                    "item_id": item_id,
+                    "message": "安装成功" if success else None,
                     "error": None if success else "安装失败",
                 },
             }
@@ -293,18 +295,19 @@ class WebSocketClient:
         elif message_type == "mcp_remove":
             # 服务端推送 MCP Server 卸载指令
             data = message.get("data", {})
-            name = data.get("name", "")
+            item_id = data.get("item_id", "")
             logger.info(
                 f"[CLIENT-MCP-REMOVE] MCP remove received: message_id={message_id}, "
-                f"name={name}, client_id={self.client_id}"
+                f"item_id={item_id}, client_id={self.client_id}"
             )
-            success = self.mcp_manager.remove_server(name)
+            success = self.mcp_manager.remove_server(item_id)
             return {
                 "id": message_id,
                 "type": "mcp_remove_result",
+                "success": success,
                 "data": {
-                    "name": name,
-                    "success": success,
+                    "item_id": item_id,
+                    "message": "卸载成功" if success else None,
                     "error": None if success else "卸载失败",
                 },
             }
@@ -329,7 +332,8 @@ class WebSocketClient:
             return {
                 "id": message_id,
                 "type": "error",
-                "error": f"未知消息类型: {message_type}",
+                "timestamp": int(__import__("time").time() * 1000),
+                "data": {"error": f"未知消息类型: {message_type}"},
             }
 
     async def _send_heartbeat(self):

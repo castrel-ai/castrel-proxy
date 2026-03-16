@@ -26,14 +26,23 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
     langchain_config = {}
     
     for name, server_config in config_data.items():
+        # 过滤掉无效条目（空名字或空配置）
+        if not name or not server_config:
+            logger.warning(f"跳过无效的 MCP 配置条目: name={repr(name)}")
+            continue
+
         # 获取 transport 类型，默认为 stdio
         transport = server_config.get('transport', 'stdio')
         
         if transport == 'stdio':
+            command = server_config.get('command', '')
+            if not command:
+                logger.warning(f"MCP 服务 '{name}' 缺少 command 字段，跳过")
+                continue
             # stdio 类型：使用 command 和 args
             langchain_config[name] = {
                 'transport': 'stdio',
-                'command': server_config.get('command', ''),
+                'command': command,
                 'args': server_config.get('args', []),
             }
             # 添加环境变量（如果有）
@@ -41,10 +50,14 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
                 langchain_config[name]['env'] = server_config.get('env')
         
         elif transport == 'http':
+            url = server_config.get('url', '')
+            if not url:
+                logger.warning(f"MCP 服务 '{name}' 缺少 url 字段，跳过")
+                continue
             # http 类型：使用 url
             langchain_config[name] = {
                 'transport': 'http',
-                'url': server_config.get('url', ''),
+                'url': url,
             }
         
         else:
@@ -165,7 +178,7 @@ class MCPManager:
             List[Dict]: 所有 tools 列表
         """
         if not self.client:
-            logger.error("MCP 客户端未初始化")
+            logger.debug("没有配置 MCP 服务，跳过工具获取")
             return {}
         
         try:
