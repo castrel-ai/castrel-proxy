@@ -6,8 +6,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from bridge.skill_manager import SkillManager
-from bridge.skill_sync import SkillSyncManager
+from castrel_proxy.skills.manager import SkillsManager as SkillManager
+from castrel_proxy.skills.sync import SkillSyncManager
 
 
 def _zip_to_b64(files: dict[str, str]) -> str:

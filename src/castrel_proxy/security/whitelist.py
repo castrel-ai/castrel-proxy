@@ -8,7 +8,7 @@ import importlib.resources
 import logging
 import os
 import re
-from typing import List, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -330,7 +330,7 @@ def _extract_commands(full_command: str) -> List[str]:
     return commands
 
 
-def is_command_allowed(full_command: str) -> Tuple[bool, List[str]]:
+def is_command_allowed(full_command: str, override_allowlist: Optional[Set[str]] = None) -> Tuple[bool, List[str]]:
     """
     Check if command is in whitelist
 
@@ -338,6 +338,7 @@ def is_command_allowed(full_command: str) -> Tuple[bool, List[str]]:
 
     Args:
         full_command: Complete command string
+        override_allowlist: If provided, use this set instead of loading from local file
 
     Returns:
         Tuple[bool, List[str]]: (Whether execution is allowed, List of commands not in whitelist)
@@ -356,8 +357,8 @@ def is_command_allowed(full_command: str) -> Tuple[bool, List[str]]:
         else:
             return False, ["(empty command)"]
 
-    # Load whitelist
-    whitelist = load_whitelist()
+    # Load whitelist (from override or local file)
+    whitelist = override_allowlist if override_allowlist is not None else load_whitelist()
 
     # Check each subcommand
     blocked_commands = []

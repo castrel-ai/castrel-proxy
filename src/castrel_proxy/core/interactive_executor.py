@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from bridge.config import get_config
+from .config import get_config
 
 
 @dataclass

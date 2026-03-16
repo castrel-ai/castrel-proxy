@@ -1,14 +1,14 @@
 """
-Skill 同步管理器
+Skill Sync Manager
 
-处理通过 WebSocket 的双向 Skill 同步。
+Handles bidirectional skill synchronization over WebSocket.
 """
 
 import base64
 import hashlib
 import io
-import logging
 import json
+import logging
 import shutil
 import tempfile
 import time
@@ -17,32 +17,35 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from bridge.skill_manager import SkillManager, get_skill_manager
-from bridge.skill_validator import check_zip_safety, validate_skill
+from .manager import SkillsManager, get_skills_manager
+from .validator import check_zip_safety, validate_skill
 
 logger = logging.getLogger(__name__)
 
 
 class SkillSyncManager:
-    """管理通过 WebSocket 的双向 Skill 同步"""
+    """Manages bidirectional skill synchronization over WebSocket"""
 
-    def __init__(self, skill_manager: Optional[SkillManager] = None):
-        self.skill_manager = skill_manager or get_skill_manager()
+    def __init__(
+        self,
+        skills_manager: Optional[SkillsManager] = None,
+        skill_manager: Optional[SkillsManager] = None,  # alias for backward compat
+    ):
+        self.skills_manager = skills_manager or skill_manager or get_skills_manager()
 
     def build_capabilities_sync_message(self, mcp_tools: Dict[str, Any]) -> dict:
         """
-        构建 capabilities_sync 消息，包含 skills 清单和 MCP tools。
+        Build capabilities_sync message containing skills manifest and MCP tools.
 
         Args:
-            mcp_tools: MCP tools 字典 (从 MCPManager.get_all_tools() 获取)
+            mcp_tools: MCP tools dict (from MCPManager.get_all_tools())
 
         Returns:
-            完整的 capabilities_sync 消息
+            Complete capabilities_sync message
         """
-        skills_info = self.skill_manager.get_skills_for_registration()
-        manifest = self.skill_manager.build_sync_manifest()
+        skills_info = self.skills_manager.get_skills_for_registration()
+        manifest = self.skills_manager.build_sync_manifest()
 
-        # 计算综合哈希
         combined = json.dumps(
             {"skills": manifest.manifest_hash, "mcp": sorted(mcp_tools.keys())},
             sort_keys=True,
@@ -62,24 +65,22 @@ class SkillSyncManager:
 
     def build_skill_push_message(self, skill_name: str) -> dict:
         """
-        构建 skill_content_push 消息。
+        Build skill_content_push message.
 
-        读取 SKILL.md 内容，并将 scripts/references/assets 打包为 base64 ZIP。
+        Reads SKILL.md content and packages scripts/references/assets as base64 ZIP.
 
         Args:
-            skill_name: 要推送的 Skill 名称
+            skill_name: Name of the skill to push
 
         Returns:
-            skill_content_push 消息
+            skill_content_push message
         """
-        skill = self.skill_manager.load_skill(skill_name)
+        skill = self.skills_manager.load_skill(skill_name)
         skill_dir = Path(skill.skill_dir)
 
-        # 读取 SKILL.md 原始内容
         skill_md_path = skill_dir / "SKILL.md"
         skill_md_content = skill_md_path.read_text(encoding="utf-8")
 
-        # 将资源目录打包为 ZIP
         resources_zip_b64 = self._zip_resources(skill_dir)
 
         return {
@@ -99,14 +100,14 @@ class SkillSyncManager:
         self, message: dict, ws_send_json: Callable
     ) -> Optional[dict]:
         """
-        处理服务端的 skill_sync_request：比较清单，推送差异。
+        Handle server's skill_sync_request: compare manifests and push diffs.
 
         Args:
-            message: skill_sync_request 消息
-            ws_send_json: WebSocket 发送函数
+            message: skill_sync_request message
+            ws_send_json: WebSocket send function
 
         Returns:
-            响应消息或 None
+            None (responds via ws_send_json for each skill push)
         """
         message_id = message.get("id", "")
         data = message.get("data", {})
@@ -117,19 +118,15 @@ class SkillSyncManager:
             f"server_skills={len(server_manifest)}"
         )
 
-        # 构建本地清单
-        local_manifest = self.skill_manager.build_sync_manifest()
+        local_manifest = self.skills_manager.build_sync_manifest()
 
-        # 找出需要推送的 skills（本地有但服务端没有，或哈希不同且本地更新）
         for name, entry in local_manifest.skills.items():
             server_entry = server_manifest.get(name)
             should_push = False
 
             if server_entry is None:
-                # 服务端没有此 skill
                 should_push = True
             elif server_entry.get("content_hash") != entry.content_hash:
-                # 哈希不同，比较时间戳
                 server_updated = server_entry.get("updated_at", 0)
                 if entry.updated_at > server_updated:
                     should_push = True
@@ -142,17 +139,17 @@ class SkillSyncManager:
                 except Exception as e:
                     logger.error(f"[SKILL-SYNC-PUSH-ERROR] Failed to push skill '{name}': {e}")
 
-        return None  # 不需要直接响应
+        return None
 
     async def handle_skill_content_pull(self, message: dict) -> dict:
         """
-        处理服务端推送 skill 到本地：写入磁盘。
+        Handle server pushing a skill to local: write to disk.
 
         Args:
-            message: skill_content_pull 消息
+            message: skill_content_pull message
 
         Returns:
-            响应消息
+            Response message
         """
         message_id = message.get("id", "")
         data = message.get("data", {})
@@ -169,7 +166,7 @@ class SkillSyncManager:
         try:
             actual_hash = hashlib.sha256(skill_md_content.encode("utf-8")).hexdigest()
             if expected_hash and expected_hash != actual_hash:
-                raise ValueError("content_hash 与 SKILL.md 内容不匹配")
+                raise ValueError("content_hash does not match SKILL.md content")
 
             self._write_skill_from_pull(skill_name, skill_md_content, resources_zip_b64)
 
@@ -178,7 +175,7 @@ class SkillSyncManager:
                 "id": message_id,
                 "type": "skill_content_pull_result",
                 "success": True,
-                "data": {"skill_name": skill_name, "message": "Skill 已保存"},
+                "data": {"skill_name": skill_name, "message": "Skill saved"},
             }
 
         except Exception as e:
@@ -192,13 +189,13 @@ class SkillSyncManager:
 
     async def handle_skill_delete_push(self, message: dict) -> dict:
         """
-        处理服务端指令删除本地 skill。
+        Handle server instruction to delete a local skill.
 
         Args:
-            message: skill_delete_push 消息
+            message: skill_delete_push message
 
         Returns:
-            响应消息
+            Response message
         """
         message_id = message.get("id", "")
         data = message.get("data", {})
@@ -210,13 +207,13 @@ class SkillSyncManager:
         )
 
         try:
-            self.skill_manager.remove_skill(skill_name)
+            self.skills_manager.remove_skill(skill_name)
             logger.info(f"[SKILL-DELETE-SUCCESS] Skill deleted: {skill_name}")
             return {
                 "id": message_id,
                 "type": "skill_delete_push_result",
                 "success": True,
-                "data": {"skill_name": skill_name, "message": "Skill 已删除"},
+                "data": {"skill_name": skill_name, "message": "Skill deleted"},
             }
         except Exception as e:
             logger.error(f"[SKILL-DELETE-ERROR] Failed to delete skill '{skill_name}': {e}")
@@ -227,17 +224,14 @@ class SkillSyncManager:
                 "data": {"skill_name": skill_name, "error": str(e)},
             }
 
-    # ==================== 内部辅助 ====================
+    # ==================== Internal helpers ====================
 
     def _zip_resources(self, skill_dir: Path) -> str:
         """
-        将 skill 的 scripts/, references/, assets/ 打包为 base64 编码的 ZIP。
-
-        Args:
-            skill_dir: Skill 目录路径
+        Package skill's scripts/, references/, assets/ as base64-encoded ZIP.
 
         Returns:
-            base64 编码的 ZIP 字符串，如果没有资源则返回空字符串
+            Base64-encoded ZIP string, or empty string if no resources
         """
         resource_dirs = ["scripts", "references", "assets"]
         has_resources = False
@@ -263,25 +257,24 @@ class SkillSyncManager:
         self, skill_name: str, skill_md_content: str, resources_zip_b64: str
     ) -> None:
         """
-        将服务端推送的 skill 内容写入本地磁盘。
+        Write server-pushed skill content to local disk.
+
+        Uses a staging directory + atomic copy to avoid half-written state.
 
         Args:
-            skill_name: Skill 名称
-            skill_md_content: SKILL.md 内容
-            resources_zip_b64: base64 编码的资源 ZIP
+            skill_name: Skill name
+            skill_md_content: SKILL.md content
+            resources_zip_b64: Base64-encoded resources ZIP
         """
-        self.skill_manager._ensure_skills_dir()
-        target_dir = self.skill_manager._get_skill_dir(skill_name)
+        self.skills_manager._ensure_skills_dir()
+        target_dir = self.skills_manager._get_skill_dir(skill_name)
 
-        # 先写入临时目录并校验，成功后再原子替换，避免半写入状态
         with tempfile.TemporaryDirectory() as tmp_dir:
             staging_dir = Path(tmp_dir) / skill_name
             staging_dir.mkdir(parents=True)
 
-            # 写入 SKILL.md
             (staging_dir / "SKILL.md").write_text(skill_md_content, encoding="utf-8")
 
-            # 解压资源 ZIP
             if resources_zip_b64:
                 zip_data = base64.b64decode(resources_zip_b64, validate=True)
                 buf = io.BytesIO(zip_data)
@@ -293,27 +286,27 @@ class SkillSyncManager:
                 try:
                     errors = check_zip_safety(tmp_path)
                     if errors:
-                        raise ValueError(f"ZIP 安全检查失败: {'; '.join(errors)}")
+                        raise ValueError(f"ZIP safety check failed: {'; '.join(errors)}")
                 finally:
                     tmp_path.unlink(missing_ok=True)
 
                 with zipfile.ZipFile(buf, "r") as zf:
                     zf.extractall(staging_dir)
 
-            # 确保资源目录存在
+            # Ensure resource directories exist
             for dir_name in ["scripts", "references", "assets"]:
                 (staging_dir / dir_name).mkdir(exist_ok=True)
 
-            # 校验 frontmatter 与目录名一致
-            frontmatter, _ = self.skill_manager._parse_skill_md(staging_dir / "SKILL.md")
+            # Validate frontmatter name matches skill_name
+            frontmatter, _ = self.skills_manager._parse_skill_md(staging_dir / "SKILL.md")
             if frontmatter.name != skill_name:
                 raise ValueError(
-                    f"skill_name '{skill_name}' 与 frontmatter.name '{frontmatter.name}' 不一致"
+                    f"skill_name '{skill_name}' does not match frontmatter name '{frontmatter.name}'"
                 )
 
             is_valid, errors, warnings = validate_skill(staging_dir, strict=False)
             if not is_valid:
-                raise ValueError("Skill 内容验证失败: " + "; ".join(errors))
+                raise ValueError("Skill content validation failed: " + "; ".join(errors))
             if warnings:
                 logger.warning(
                     "[SKILL-PULL-WARN] Skill has warnings: %s",

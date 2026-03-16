@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bridge.skill_validator import validate_skill
+from castrel_proxy.skills.validator import validate_skill
 
 
 class SkillValidatorTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class SkillValidatorTests(unittest.TestCase):
             is_valid, errors, _warnings = validate_skill(skill_dir)
 
             self.assertFalse(is_valid)
-            self.assertTrue(any("目录名" in e for e in errors))
+            self.assertTrue(any("Directory name" in e for e in errors))
 
     def test_blocked_extension_is_rejected_anywhere(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -33,7 +33,7 @@ class SkillValidatorTests(unittest.TestCase):
             is_valid, errors, _warnings = validate_skill(skill_dir)
 
             self.assertFalse(is_valid)
-            self.assertTrue(any("禁止的文件类型" in e for e in errors))
+            self.assertTrue(any("Blocked file type" in e for e in errors))
 
 
 if __name__ == "__main__":
