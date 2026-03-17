@@ -15,7 +15,7 @@ from typing import Optional
 import aiohttp
 
 from ..core.config import get_config
-from ..core.executor import CommandExecutor
+from ..core.executor import CommandExecutor, build_shell_command, normalize_command_and_args
 from ..core.interactive_executor import get_interactive_executor
 from ..core.openclaw import OpenClawChecker
 from ..mcp.manager import get_mcp_manager
@@ -894,8 +894,7 @@ class WebSocketClient:
                     },
                 }
 
-            if args is None:
-                args = []
+            command, args = normalize_command_and_args(command, args)
 
             # 展开Arguments中的 ~ 路径和环境变量
             expanded_args = []
@@ -906,11 +905,8 @@ class WebSocketClient:
                 else:
                     expanded_args.append(arg)
 
-            # 构建完整命令
-            if expanded_args:
-                full_command = f"{command} {' '.join(expanded_args)}"
-            else:
-                full_command = command
+            # 构建完整命令（对每个参数做 shell 安全转义，避免分号等字符被误解析）
+            full_command = build_shell_command(command, expanded_args)
 
             # Permission check: apply server policy if available, otherwise fall back to local whitelist
             bash_policy = (self.server_policy or {}).get("bash", {})
