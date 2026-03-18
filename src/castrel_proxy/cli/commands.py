@@ -19,12 +19,14 @@ from ..core.daemon import get_daemon_manager
 from ..mcp.manager import get_mcp_manager
 from ..network.api_client import APIError, NetworkError, PairingError, get_api_client
 from ..network.websocket_client import WebSocketClient
+from .skill_commands import skill_app
 # from ..security.whitelist import init_whitelist_file  # DISABLED: Whitelist mechanism disabled
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
+app.add_typer(skill_app, name="skill")
 
 
 def decode_verification_code(verification_code: str) -> Dict[str, Any]:

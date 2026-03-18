@@ -15,11 +15,13 @@ from typing import Optional
 import aiohttp
 
 from ..core.config import get_config
-from ..core.executor import CommandExecutor
+from ..core.executor import CommandExecutor, build_shell_command, normalize_command_and_args
+from ..core.interactive_executor import get_interactive_executor
 from ..core.openclaw import OpenClawChecker
 from ..mcp.manager import get_mcp_manager
 from ..operations import document
-from ..security.whitelist import get_whitelist_file_path, is_command_allowed
+from ..security.whitelist import is_command_allowed
+from ..skills.sync import SkillSyncManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -52,6 +54,8 @@ class WebSocketClient:
         self.workspace_id = workspace_id
         self.reconnect_interval = reconnect_interval
         self.mcp_manager = get_mcp_manager()
+        self.interactive_executor = get_interactive_executor()
+        self.skill_sync = SkillSyncManager()
         self.running = False
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.session: Optional[aiohttp.ClientSession] = None
@@ -63,6 +67,7 @@ class WebSocketClient:
         self.openclaw_check_task: Optional[asyncio.Task] = None
         self.openclaw_check_interval = 60.0  # OpenClaw check interval (seconds)
         self.last_openclaw_status = None  # Track last status to avoid duplicate notifications
+        self.server_policy = None  # Server-side policy pushed via policy_sync
 
     def _get_ws_url(self) -> str:
         """Get WebSocket URL"""
@@ -164,6 +169,8 @@ class WebSocketClient:
                 f"[CLIENT-CONNECTED] Connection established: session_id={session_id}, "
                 f"message={msg}, client_id={self.client_id}"
             )
+            # Auto-send capabilities_sync after connect (non-blocking)
+            asyncio.create_task(self._send_capabilities_sync())
             # No response needed
             return None
 
@@ -225,6 +232,17 @@ class WebSocketClient:
                 f"file_path={file_path}, session_id={session_id}, encoding={encoding}, client_id={self.client_id}"
             )
 
+            # Filesystem read permission check
+            fs_policy = (self.server_policy or {}).get("filesystem", {})
+            if not fs_policy.get("read_enabled", True):
+                return {
+                    "id": message_id,
+                    "type": "doc_read_result",
+                    "success": False,
+                    "data": {"content": None, "encoding": "utf-8", "size": 0,
+                             "error": "File read is disabled by workspace policy."},
+                }
+
             return await self._execute_doc_read(
                 message_id=message_id,
                 file_path=file_path,
@@ -246,6 +264,16 @@ class WebSocketClient:
                 f"file_path={file_path}, content_len={len(content)}, session_id={session_id}, encoding={encoding}, "
                 f"create_dirs={create_dirs}, client_id={self.client_id}"
             )
+
+            # Filesystem write permission check
+            fs_policy = (self.server_policy or {}).get("filesystem", {})
+            if not fs_policy.get("write_enabled", True):
+                return {
+                    "id": message_id,
+                    "type": "doc_write_result",
+                    "success": False,
+                    "data": {"path": file_path, "size": 0, "error": "File write is disabled by workspace policy."},
+                }
 
             return await self._execute_doc_write(
                 message_id=message_id,
@@ -271,6 +299,16 @@ class WebSocketClient:
                 f"file_path={file_path}, operation={operation}, session_id={session_id}, encoding={encoding}, client_id={self.client_id}"
             )
 
+            # Filesystem edit permission check
+            fs_policy = (self.server_policy or {}).get("filesystem", {})
+            if not fs_policy.get("edit_enabled", True):
+                return {
+                    "id": message_id,
+                    "type": "doc_edit_result",
+                    "success": False,
+                    "data": {"path": file_path, "error": "File edit is disabled by workspace policy."},
+                }
+
             return await self._execute_doc_edit(
                 message_id=message_id,
                 file_path=file_path,
@@ -280,6 +318,114 @@ class WebSocketClient:
                 old_content=old_content,
                 encoding=encoding,
             )
+
+        elif message_type == "local_interactive_call":
+            data = message.get("data", {})
+            action = data.get("action", "")
+            interactive_session_id = data.get("interactive_session_id")
+            command = data.get("command")
+            args = data.get("args")
+            cwd = data.get("cwd")
+            input_text = data.get("input_text")
+            last_stdout_seq = data.get("last_stdout_seq", 0)
+            last_stderr_seq = data.get("last_stderr_seq", 0)
+            wait_ms = data.get("wait_ms", 0)
+            max_output_bytes = data.get("max_output_bytes", 65536)
+
+            logger.info(
+                f"[CLIENT-INTERACTIVE-CALL] Interactive call received: message_id={message_id}, "
+                f"action={action}, interactive_session_id={interactive_session_id}, command={command}, "
+                f"client_id={self.client_id}"
+            )
+            return await self._execute_local_interactive(
+                message_id=message_id,
+                action=action,
+                interactive_session_id=interactive_session_id,
+                command=command,
+                args=args,
+                cwd=cwd,
+                input_text=input_text,
+                last_stdout_seq=last_stdout_seq,
+                last_stderr_seq=last_stderr_seq,
+                wait_ms=wait_ms,
+                max_output_bytes=max_output_bytes,
+            )
+
+        elif message_type == "mcp_install":
+            # Server pushes MCP server install instruction
+            data = message.get("data", {})
+            item_id = data.get("item_id", "")
+            mcp_config = data.get("mcp_config", {})
+            env = data.get("env", {})
+            logger.info(
+                f"[CLIENT-MCP-INSTALL] MCP install received: message_id={message_id}, "
+                f"item_id={item_id}, client_id={self.client_id}"
+            )
+            if env:
+                mcp_config = dict(mcp_config)
+                mcp_config["env"] = env
+            success = self.mcp_manager.install_server(item_id, mcp_config)
+            return {
+                "id": message_id,
+                "type": "mcp_install_result",
+                "success": success,
+                "data": {
+                    "item_id": item_id,
+                    "message": "Installed successfully" if success else None,
+                    "error": None if success else "Installation failed",
+                },
+            }
+
+        elif message_type == "mcp_remove":
+            # Server pushes MCP server uninstall instruction
+            data = message.get("data", {})
+            item_id = data.get("item_id", "")
+            logger.info(
+                f"[CLIENT-MCP-REMOVE] MCP remove received: message_id={message_id}, "
+                f"item_id={item_id}, client_id={self.client_id}"
+            )
+            success = self.mcp_manager.remove_server(item_id)
+            return {
+                "id": message_id,
+                "type": "mcp_remove_result",
+                "success": success,
+                "data": {
+                    "item_id": item_id,
+                    "message": "Removed successfully" if success else None,
+                    "error": None if success else "Removal failed",
+                },
+            }
+
+        elif message_type == "skill_sync_request":
+            # Server requests skill sync
+            logger.info(
+                f"[CLIENT-SKILL-SYNC-REQ] Skill sync request received: message_id={message_id}, "
+                f"client_id={self.client_id}"
+            )
+            return await self.skill_sync.handle_skill_sync_request(
+                message, self.ws.send_json
+            )
+
+        elif message_type == "skill_content_pull":
+            # Server pushes skill to local
+            data = message.get("data", {})
+            skill_name = data.get("skill_name", "")
+            content_hash = data.get("content_hash", "")
+            logger.info(
+                f"[CLIENT-SKILL-PULL] Skill content pull received: message_id={message_id}, "
+                f"skill_name={skill_name}, content_hash={content_hash}, client_id={self.client_id}"
+            )
+            return await self.skill_sync.handle_skill_content_pull(message)
+
+        elif message_type == "skill_delete_push":
+            # Server instructs local skill deletion
+            data = message.get("data", {})
+            skill_name = data.get("skill_name", "")
+            logger.info(
+                f"[CLIENT-SKILL-DELETE] Skill delete push received: message_id={message_id}, "
+                f"skill_name={skill_name}, client_id={self.client_id}"
+            )
+            return await self.skill_sync.handle_skill_delete_push(message)
 
         elif message_type == "skill_read_call":
             # Handle skill read call
@@ -307,6 +453,17 @@ class WebSocketClient:
             # Server response to client heartbeat
             logger.debug(f"[CLIENT-PONG-RECV] Received pong: message_id={message_id}, client_id={self.client_id}")
             # No response needed
+            return None
+
+        elif message_type == "policy_sync":
+            # Server-side policy update
+            policy_data = message.get("data", {})
+            self.server_policy = policy_data
+            bash_mode = policy_data.get("bash", {}).get("mode", "passthrough")
+            logger.info(
+                f"[CLIENT-POLICY-SYNC] Policy updated: bash_mode={bash_mode}, "
+                f"client_id={self.client_id}"
+            )
             return None
 
         else:
@@ -436,6 +593,114 @@ class WebSocketClient:
                 "success": False,
                 "data": {
                     "error": f"Skill read failed: {str(e)}",
+                },
+            }
+
+    async def _send_capabilities_sync(self):
+        """Send capabilities_sync message after connection is established"""
+        try:
+            mcp_tools = {}
+            try:
+                mcp_tools = await self.mcp_manager.get_all_tools()
+            except Exception:
+                pass
+
+            message = self.skill_sync.build_capabilities_sync_message(mcp_tools)
+            await self.ws.send_json(message)
+
+            skills_count = len(message.get("data", {}).get("skills", {}))
+            mcp_count = len(message.get("data", {}).get("mcp_tools", {}))
+            logger.info(
+                f"[CLIENT-CAP-SYNC] Sent capabilities sync: "
+                f"skills={skills_count}, mcp_servers={mcp_count}, "
+                f"hash={message['data'].get('capabilities_hash', '')}, "
+                f"client_id={self.client_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[CLIENT-CAP-SYNC-ERROR] Failed to send capabilities sync: error={e}, "
+                f"client_id={self.client_id}",
+                exc_info=True,
+            )
+
+    async def _execute_local_interactive(
+        self,
+        message_id: str,
+        action: str,
+        interactive_session_id: Optional[str] = None,
+        command: Optional[str] = None,
+        args: Optional[list] = None,
+        cwd: Optional[str] = None,
+        input_text: Optional[str] = None,
+        last_stdout_seq: int = 0,
+        last_stderr_seq: int = 0,
+        wait_ms: int = 0,
+        max_output_bytes: int = 65536,
+    ) -> dict:
+        """Execute interactive shell session action (start/input/poll/stop)"""
+        start_time = time.time()
+        try:
+            if action == "start":
+                if not command:
+                    raise ValueError("command is required for start action")
+                full_command = command
+                if args:
+                    full_command = f"{command} {' '.join(args)}"
+                payload = await self.interactive_executor.start_session(command=full_command, cwd=cwd)
+            elif action == "input":
+                if not interactive_session_id:
+                    raise ValueError("interactive_session_id is required for input action")
+                payload = await self.interactive_executor.send_input(
+                    session_id=interactive_session_id,
+                    input_text=input_text or "",
+                )
+            elif action == "poll":
+                if not interactive_session_id:
+                    raise ValueError("interactive_session_id is required for poll action")
+                payload = await self.interactive_executor.poll(
+                    session_id=interactive_session_id,
+                    last_stdout_seq=last_stdout_seq,
+                    last_stderr_seq=last_stderr_seq,
+                    wait_ms=wait_ms,
+                    max_output_bytes=max_output_bytes,
+                )
+            elif action == "stop":
+                if not interactive_session_id:
+                    raise ValueError("interactive_session_id is required for stop action")
+                payload = await self.interactive_executor.stop_session(
+                    session_id=interactive_session_id,
+                    force=False,
+                )
+            else:
+                raise ValueError(f"Unknown interactive action: {action}")
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[CLIENT-INTERACTIVE-SUCCESS] Interactive action completed: message_id={message_id}, "
+                f"action={action}, elapsed={elapsed:.2f}s, state={payload.get('state')}, client_id={self.client_id}"
+            )
+            return {
+                "id": message_id,
+                "type": "local_interactive_result",
+                "success": True,
+                "data": payload,
+            }
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-INTERACTIVE-ERROR] Interactive action failed: message_id={message_id}, "
+                f"action={action}, error={e}, elapsed={elapsed:.2f}s, client_id={self.client_id}",
+                exc_info=True,
+            )
+            return {
+                "id": message_id,
+                "type": "local_interactive_result",
+                "success": False,
+                "data": {
+                    "session_id": interactive_session_id,
+                    "state": "error",
+                    "exit_code": None,
+                    "error": f"Interactive action failed: {str(e)}",
                 },
             }
 
@@ -629,8 +894,7 @@ class WebSocketClient:
                     },
                 }
 
-            if args is None:
-                args = []
+            command, args = normalize_command_and_args(command, args)
 
             # 展开Arguments中的 ~ 路径和环境变量
             expanded_args = []
@@ -641,26 +905,53 @@ class WebSocketClient:
                 else:
                     expanded_args.append(arg)
 
-            # 构建完整命令
-            if expanded_args:
-                full_command = f"{command} {' '.join(expanded_args)}"
-            else:
-                full_command = command
+            # 构建完整命令（对每个参数做 shell 安全转义，避免分号等字符被误解析）
+            full_command = build_shell_command(command, expanded_args)
 
-            # Whitelist check
-            is_allowed, blocked_commands = is_command_allowed(full_command)
-            if not is_allowed:
-                whitelist_path = get_whitelist_file_path()
-                blocked_list = ", ".join(blocked_commands) if blocked_commands else command
-                error_msg = (
-                    f"Command execution rejected。Following commands not in whitelist: {blocked_list}\n"
-                    f"Please add required commands to whitelist configuration file: {whitelist_path}"
-                )
+            # Permission check: apply server policy if available, otherwise fall back to local whitelist
+            bash_policy = (self.server_policy or {}).get("bash", {})
+            bash_mode = bash_policy.get("mode", "passthrough")
+
+            policy_blocked = False
+            error_msg = ""
+
+            if bash_mode == "deny_all":
+                policy_blocked = True
+                error_msg = "Command execution is disabled by workspace policy."
                 logger.warning(
-                    f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in whitelist: message_id={message_id}, "
-                    f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, "
-                    f"whitelist_path={whitelist_path}, client_id={self.client_id}"
+                    f"[CLIENT-LOCAL-EXEC-BLOCKED] Bash denied by server policy (deny_all): "
+                    f"message_id={message_id}, full_command={full_command[:200]}, client_id={self.client_id}"
                 )
+            elif bash_mode == "allowlist":
+                server_allowlist = set(bash_policy.get("allowlist", []))
+                is_allowed, blocked_commands = is_command_allowed(full_command, override_allowlist=server_allowlist)
+                if not is_allowed:
+                    policy_blocked = True
+                    blocked_list = ", ".join(blocked_commands) if blocked_commands else command
+                    error_msg = (
+                        f"Command not permitted: {blocked_list}. "
+                        f"Please contact your workspace administrator to update the node's bash policy."
+                    )
+                    logger.warning(
+                        f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in server allowlist: message_id={message_id}, "
+                        f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, client_id={self.client_id}"
+                    )
+            else:
+                # passthrough: use local whitelist
+                is_allowed, blocked_commands = is_command_allowed(full_command)
+                if not is_allowed:
+                    policy_blocked = True
+                    blocked_list = ", ".join(blocked_commands) if blocked_commands else command
+                    error_msg = (
+                        f"Command not permitted: {blocked_list}. "
+                        f"Please contact your workspace administrator to update the node's bash policy."
+                    )
+                    logger.warning(
+                        f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in local whitelist: message_id={message_id}, "
+                        f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, client_id={self.client_id}"
+                    )
+
+            if policy_blocked:
                 return {
                     "id": message_id,
                     "type": "local_tool_result",

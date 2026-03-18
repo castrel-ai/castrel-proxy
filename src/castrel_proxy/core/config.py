@@ -235,7 +235,7 @@ class Config:
     def get_openclaw_agents_dir(self) -> str:
         """
         Get OpenClaw agents directory path
-        
+
         Returns:
             str: Path to OpenClaw agents directory
         """
@@ -244,6 +244,36 @@ class Config:
             return config.get("openclaw_agents_dir", str(Path.home() / ".openclaw" / "agents"))
         except ConfigError:
             return str(Path.home() / ".openclaw" / "agents")
+
+    def get_interactive_silence_timeout_ms(self) -> int:
+        """
+        Get silence timeout for interactive sessions (milliseconds).
+
+        When a running process produces no output for this long, the session
+        state is reported as 'maybe_waiting_input'.
+
+        Returns:
+            int: Silence timeout in milliseconds (default 6000)
+        """
+        try:
+            config = self.load()
+            return int(config.get("interactive_silence_timeout_ms", 6000))
+        except (ConfigError, ValueError):
+            return 6000
+
+    def get_interactive_prompt_patterns(self) -> list:
+        """
+        Get additional regex patterns to detect interactive prompts.
+
+        Returns:
+            list[str]: List of regex pattern strings (default [])
+        """
+        try:
+            config = self.load()
+            patterns = config.get("interactive_prompt_patterns", [])
+            return patterns if isinstance(patterns, list) else []
+        except ConfigError:
+            return []
 
 
 # Global configuration instance
