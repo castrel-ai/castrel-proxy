@@ -365,6 +365,8 @@ class WebSocketClient:
                 mcp_config = dict(mcp_config)
                 mcp_config["env"] = env
             success = self.mcp_manager.install_server(item_id, mcp_config)
+            if success:
+                self._schedule_capabilities_sync(reason=f"mcp_install:{item_id}")
             return {
                 "id": message_id,
                 "type": "mcp_install_result",
@@ -385,6 +387,8 @@ class WebSocketClient:
                 f"item_id={item_id}, client_id={self.client_id}"
             )
             success = self.mcp_manager.remove_server(item_id)
+            if success:
+                self._schedule_capabilities_sync(reason=f"mcp_remove:{item_id}")
             return {
                 "id": message_id,
                 "type": "mcp_remove_result",
@@ -415,7 +419,10 @@ class WebSocketClient:
                 f"[CLIENT-SKILL-PULL] Skill content pull received: message_id={message_id}, "
                 f"skill_name={skill_name}, content_hash={content_hash}, client_id={self.client_id}"
             )
-            return await self.skill_sync.handle_skill_content_pull(message)
+            result = await self.skill_sync.handle_skill_content_pull(message)
+            if result.get("success"):
+                self._schedule_capabilities_sync(reason=f"skill_content_pull:{skill_name}")
+            return result
 
         elif message_type == "skill_delete_push":
             # Server instructs local skill deletion
@@ -425,7 +432,10 @@ class WebSocketClient:
                 f"[CLIENT-SKILL-DELETE] Skill delete push received: message_id={message_id}, "
                 f"skill_name={skill_name}, client_id={self.client_id}"
             )
-            return await self.skill_sync.handle_skill_delete_push(message)
+            result = await self.skill_sync.handle_skill_delete_push(message)
+            if result.get("success"):
+                self._schedule_capabilities_sync(reason=f"skill_delete_push:{skill_name}")
+            return result
 
         elif message_type == "skill_read_call":
             # Handle skill read call
@@ -596,14 +606,35 @@ class WebSocketClient:
                 },
             }
 
-    async def _send_capabilities_sync(self):
-        """Send capabilities_sync message after connection is established"""
+    def _schedule_capabilities_sync(self, reason: str) -> None:
+        """Schedule a non-blocking capabilities sync if the websocket is available."""
+        if not self.ws or self.ws.closed:
+            logger.warning(
+                f"[CLIENT-CAP-SYNC-SKIP] Skip capabilities sync because websocket is unavailable: "
+                f"reason={reason}, client_id={self.client_id}"
+            )
+            return
+
+        asyncio.create_task(self._send_capabilities_sync(reason=reason))
+
+    async def _send_capabilities_sync(self, reason: str = "connected"):
+        """Send capabilities_sync message after connection or local capability changes."""
         try:
             mcp_tools = {}
             try:
+                raw_configs = self.mcp_manager.get_raw_configs()
+                if raw_configs and not self.mcp_manager.client:
+                    await self.mcp_manager.connect_all(strict=False)
+
                 mcp_tools = await self.mcp_manager.get_all_tools()
-            except Exception:
-                pass
+
+                if raw_configs and not mcp_tools:
+                    mcp_tools = {name: [] for name in raw_configs.keys()}
+            except Exception as e:
+                logger.warning(
+                    f"[CLIENT-CAP-SYNC-MCP-WARN] Failed to build MCP capability snapshot: "
+                    f"reason={reason}, error={e}, client_id={self.client_id}"
+                )
 
             message = self.skill_sync.build_capabilities_sync_message(mcp_tools)
             await self.ws.send_json(message)
@@ -613,13 +644,14 @@ class WebSocketClient:
             logger.info(
                 f"[CLIENT-CAP-SYNC] Sent capabilities sync: "
                 f"skills={skills_count}, mcp_servers={mcp_count}, "
+                f"reason={reason}, "
                 f"hash={message['data'].get('capabilities_hash', '')}, "
                 f"client_id={self.client_id}"
             )
         except Exception as e:
             logger.error(
                 f"[CLIENT-CAP-SYNC-ERROR] Failed to send capabilities sync: error={e}, "
-                f"client_id={self.client_id}",
+                f"reason={reason}, client_id={self.client_id}",
                 exc_info=True,
             )
 

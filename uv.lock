@@ -240,7 +240,7 @@ wheels = [
 
 [[package]]
 name = "castrel-proxy"
-version = "0.1.5"
+version = "0.1.8b1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

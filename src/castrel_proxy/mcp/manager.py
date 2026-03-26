@@ -192,7 +192,7 @@ class MCPManager:
             logger.error(f"Failed to get server list: {e}")
             return []
 
-    async def connect_all(self) -> int:
+    async def connect_all(self, strict: bool = True) -> int:
         """
         Connect to all configured MCP services
 
@@ -221,15 +221,22 @@ class MCPManager:
             return len(self.server_configs)
 
         except ValueError as e:
-            # Configuration error - exit immediately
             logger.error(f"Configuration error: {e}")
-            logger.error("Exiting due to invalid MCP configuration")
-            sys.exit(1)
+            if strict:
+                logger.error("Exiting due to invalid MCP configuration")
+                sys.exit(1)
+            self.client = None
+            self.server_configs = {}
+            return 0
 
         except Exception as e:
             logger.error(f"Failed to connect to MCP services: {e}")
-            logger.error("Exiting due to MCP connection failure")
-            sys.exit(1)
+            if strict:
+                logger.error("Exiting due to MCP connection failure")
+                sys.exit(1)
+            self.client = None
+            self.server_configs = {}
+            return 0
 
     async def get_all_tools(self) -> Dict[str, List[Dict]]:
         """
