@@ -6,7 +6,9 @@ Responsible for executing shell commands and returning results
 
 import asyncio
 import os
-from typing import Dict, Optional
+import re
+import shlex
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
 class ExecutionResult:
@@ -26,6 +28,48 @@ class ExecutionResult:
             "stderr": self.stderr,
             "execution_time": self.execution_time,
         }
+
+
+def build_shell_command(command: str, args: Optional[Sequence[str]] = None) -> str:
+    """
+    Build a shell command string with safely quoted arguments.
+
+    Args:
+        command: Base command
+        args: Optional argument list
+
+    Returns:
+        str: Shell command string
+    """
+    if not args:
+        return command
+    quoted_args = [shlex.quote(str(arg)) for arg in args]
+    return f"{command} {' '.join(quoted_args)}"
+
+
+def normalize_command_and_args(command: str, args: Optional[Sequence[str]] = None) -> Tuple[str, List[str]]:
+    """
+    Normalize command inputs for common single-string patterns.
+
+    Args:
+        command: Command string from tool input
+        args: Optional argument list
+
+    Returns:
+        Tuple[str, List[str]]: Normalized command and args
+    """
+    normalized_command = (command or "").strip()
+    normalized_args = [str(arg) for arg in args] if args else []
+
+    if normalized_args or not normalized_command:
+        return normalized_command, normalized_args
+
+    # Recovery for common LLM output: "python -c <code>"
+    python_c_match = re.match(r"^(python3?)\s+-c\s+(.+)$", normalized_command, flags=re.S)
+    if python_c_match:
+        return python_c_match.group(1), ["-c", python_c_match.group(2)]
+
+    return normalized_command, normalized_args
 
 
 class CommandExecutor:

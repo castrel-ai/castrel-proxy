@@ -5,11 +5,9 @@ Handles HTTP communication with the server
 """
 
 import asyncio
-import ssl
 from typing import Dict
 
 import aiohttp
-import certifi
 
 from ..core.client_id import get_machine_metadata
 
@@ -43,15 +41,6 @@ class APIClient:
             timeout: Request timeout (seconds)
         """
         self.timeout = aiohttp.ClientTimeout(total=timeout)
-        # Load system CAs first, then append certifi's bundle.
-        # Using cafile= alone would *replace* the system store, potentially
-        # missing intermediate CAs that are present in the OS but not certifi.
-        self._ssl_context = ssl.create_default_context()
-        self._ssl_context.load_verify_locations(cafile=certifi.where())
-
-    def _make_connector(self) -> aiohttp.TCPConnector:
-        """Create TCP connector with certifi CA bundle (fixes CentOS 7 / old OpenSSL)"""
-        return aiohttp.TCPConnector(ssl=self._ssl_context)
 
     async def _verify_pairing_async(
         self, server_url: str, verification_code: str, client_id: str, workspace_id: str
@@ -87,7 +76,7 @@ class APIClient:
         payload = {"verification_code": verification_code, "client_id": client_id, "workspace_id": workspace_id}
 
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout, connector=self._make_connector()) as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(endpoint, json=payload) as response:
                     # Get response data
                     try:
@@ -122,7 +111,7 @@ class APIClient:
                         raise APIError(f"{error_msg} (HTTP {response.status})")
 
         except aiohttp.ClientConnectorError as e:
-            raise NetworkError(f"Unable to connect to server: {server_url} ({e})") from e
+            raise NetworkError(f"Unable to connect to server: {server_url}") from e
         except asyncio.TimeoutError as e:
             raise NetworkError(f"Connection timeout: {server_url}") from e
         except (PairingError, APIError):
@@ -170,7 +159,7 @@ class APIClient:
         server_url = server_url.rstrip("/")
 
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout, connector=self._make_connector()) as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.get(f"{server_url}/api/v1/bridge/health") as response:
                     return response.status == 200
         except Exception:
@@ -234,7 +223,7 @@ class APIClient:
             payload["skills"] = skills
 
         try:
-            async with aiohttp.ClientSession(timeout=self.timeout, connector=self._make_connector()) as session:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
                 async with session.post(endpoint, json=payload) as response:
                     # Get response data
                     try:
@@ -267,7 +256,7 @@ class APIClient:
                         raise APIError(f"{error_msg} (HTTP {response.status})")
 
         except aiohttp.ClientConnectorError as e:
-            raise NetworkError(f"Unable to connect to server: {server_url} ({e})") from e
+            raise NetworkError(f"Unable to connect to server: {server_url}") from e
         except asyncio.TimeoutError as e:
             raise NetworkError(f"Connection timeout: {server_url}") from e
         except (APIError, NetworkError):
