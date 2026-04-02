@@ -6,7 +6,6 @@ Responsible for executing shell commands and returning results
 
 import asyncio
 import os
-import re
 import shlex
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -49,7 +48,7 @@ def build_shell_command(command: str, args: Optional[Sequence[str]] = None) -> s
 
 def normalize_command_and_args(command: str, args: Optional[Sequence[str]] = None) -> Tuple[str, List[str]]:
     """
-    Normalize command inputs for common single-string patterns.
+    Normalize command inputs for single-string command lines.
 
     Args:
         command: Command string from tool input
@@ -64,12 +63,11 @@ def normalize_command_and_args(command: str, args: Optional[Sequence[str]] = Non
     if normalized_args or not normalized_command:
         return normalized_command, normalized_args
 
-    # Recovery for common LLM output: "python -c <code>"
-    python_c_match = re.match(r"^(python3?)\s+-c\s+(.+)$", normalized_command, flags=re.S)
-    if python_c_match:
-        return python_c_match.group(1), ["-c", python_c_match.group(2)]
+    parts = shlex.split(normalized_command, posix=True)
+    if not parts:
+        return "", []
 
-    return normalized_command, normalized_args
+    return parts[0], parts[1:]
 
 
 class CommandExecutor:

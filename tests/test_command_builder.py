@@ -20,6 +20,20 @@ def test_normalize_command_and_args_keeps_existing_args():
     assert args == ["-c", "print('ok')"]
 
 
+def test_normalize_command_and_args_for_general_single_string_command():
+    command, args = normalize_command_and_args("kubectl get pods -n default", None)
+
+    assert command == "kubectl"
+    assert args == ["get", "pods", "-n", "default"]
+
+
+def test_normalize_command_and_args_preserves_quoted_argument():
+    command, args = normalize_command_and_args("curl -H 'User-Agent: Demo Client' https://example.com", None)
+
+    assert command == "curl"
+    assert args == ["-H", "User-Agent: Demo Client", "https://example.com"]
+
+
 def test_build_shell_command_quotes_semicolon_in_single_arg():
     command = "curl"
     args = [

@@ -54,14 +54,19 @@ The proxy does not respond.
 
 Request the proxy to execute a local shell command.
 
+Important distinction:
+
+- The LLM-facing tool input is `command_line` only.
+- The internal WebSocket message also uses `command_line` only.
+- The proxy parses `command_line` locally before execution.
+
 ```json
 {
   "id": "string",
   "type": "local_tool_call",
   "timestamp": 1730000000000,
   "data": {
-    "command": "string",
-    "args": ["string"],
+    "command_line": "string",
     "cwd": "string",
     "timeout": 300,
     "session_id": "string"

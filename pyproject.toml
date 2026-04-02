@@ -1,6 +1,6 @@
 [project]
 name = "castrel-proxy"
-version = "0.1.8b1"
+version = "0.1.9a5"
 description = "A lightweight remote command execution bridge client with MCP integration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,7 @@ dependencies = [
     "pyyaml>=6.0.1",
     "pydantic>=2.0.0",
     "aiohttp>=3.9.0",
+    "httpx[socks]>=0.27.0",
     "mcp>=1.0.0",
     "langchain-mcp-adapters>=0.2.1",
     "file-read-backwards>=2.0.0",

@@ -20,6 +20,17 @@ class ConfigError(Exception):
 class Config:
     """Configuration management class"""
 
+    @staticmethod
+    def _coerce_bool(value: object) -> bool:
+        """Normalize loose config values into booleans."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return False
+
     def __init__(self, config_dir: Optional[Path] = None):
         """
         Initialize configuration manager
@@ -73,6 +84,8 @@ class Config:
             "workspace_id": workspace_id,
             "paired_at": datetime.now(timezone.utc).isoformat(),
         }
+
+        config_data["yolo"] = self._coerce_bool(existing_config.get("yolo", False))
 
         # Preserve or initialize openclaw configuration
         # If exists in existing config, preserve it; otherwise use default values from getters
@@ -191,6 +204,14 @@ class Config:
     def get_workspace_id(self) -> str:
         """Get workspace ID"""
         return self.load()["workspace_id"]
+
+    def get_yolo_enabled(self) -> bool:
+        """Get whether local whitelist enforcement is bypassed."""
+        try:
+            config = self.load()
+            return self._coerce_bool(config.get("yolo", False))
+        except ConfigError:
+            return False
 
     def get_openclaw_check_enabled(self) -> bool:
         """

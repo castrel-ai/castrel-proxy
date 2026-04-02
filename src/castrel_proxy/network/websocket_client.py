@@ -10,12 +10,13 @@ import logging
 import os
 import time
 import uuid
+from urllib.parse import urlparse
 from typing import Optional
 
 import aiohttp
 
 from ..core.config import get_config
-from ..core.executor import CommandExecutor, build_shell_command, normalize_command_and_args
+from ..core.executor import CommandExecutor
 from ..core.interactive_executor import get_interactive_executor
 from ..core.openclaw import OpenClawChecker
 from ..mcp.manager import get_mcp_manager
@@ -177,22 +178,20 @@ class WebSocketClient:
         elif message_type == "local_tool_call":
             # Handle local command call
             data = message.get("data", {})
-            command = data.get("command", "")
-            args = data.get("args", [])
+            command_line = data.get("command_line", "")
             cwd = data.get("cwd")
             timeout = data.get("timeout", 300)
             session_id = data.get("session_id", "")
 
             logger.info(
                 f"[CLIENT-LOCAL-CALL] Local tool call received: message_id={message_id}, "
-                f"command={command}, args={args}, cwd={cwd}, session_id={session_id}, timeout={timeout}s, "
+                f"command_line={command_line}, cwd={cwd}, session_id={session_id}, timeout={timeout}s, "
                 f"client_id={self.client_id}"
             )
 
             return await self._execute_local_command(
                 message_id=message_id,
-                command=command,
-                args=args,
+                command_line=command_line,
                 cwd=cwd,
                 session_id=session_id,
                 timeout=timeout,
@@ -323,8 +322,7 @@ class WebSocketClient:
             data = message.get("data", {})
             action = data.get("action", "")
             interactive_session_id = data.get("interactive_session_id")
-            command = data.get("command")
-            args = data.get("args")
+            command_line = data.get("command_line")
             cwd = data.get("cwd")
             input_text = data.get("input_text")
             last_stdout_seq = data.get("last_stdout_seq", 0)
@@ -334,15 +332,14 @@ class WebSocketClient:
 
             logger.info(
                 f"[CLIENT-INTERACTIVE-CALL] Interactive call received: message_id={message_id}, "
-                f"action={action}, interactive_session_id={interactive_session_id}, command={command}, "
+                f"action={action}, interactive_session_id={interactive_session_id}, command_line={command_line}, "
                 f"client_id={self.client_id}"
             )
             return await self._execute_local_interactive(
                 message_id=message_id,
                 action=action,
                 interactive_session_id=interactive_session_id,
-                command=command,
-                args=args,
+                command_line=command_line,
                 cwd=cwd,
                 input_text=input_text,
                 last_stdout_seq=last_stdout_seq,
@@ -454,6 +451,35 @@ class WebSocketClient:
                 session_id=session_id,
             )
 
+        elif message_type == "http_proxy_call":
+            # Handle HTTP proxy call (internal network data source forwarding)
+            data = message.get("data", {})
+            session_id = data.get("session_id", "")
+            method = data.get("method", "GET")
+            url = data.get("url", "")
+            headers = data.get("headers", {})
+            params = data.get("params")
+            body = data.get("body")
+            verify_ssl = data.get("verify_ssl", True)
+            timeout = data.get("timeout", 30)
+
+            logger.info(
+                f"[CLIENT-HTTP-PROXY-CALL] HTTP proxy call received: message_id={message_id}, "
+                f"method={method}, url={url}, session_id={session_id}, client_id={self.client_id}"
+            )
+
+            return await self._execute_http_proxy(
+                message_id=message_id,
+                session_id=session_id,
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                body=body,
+                verify_ssl=verify_ssl,
+                timeout=timeout,
+            )
+
         elif message_type == "ping":
             # Heartbeat from server, response needed
             logger.debug(f"[CLIENT-PING-RECV] Received ping: message_id={message_id}, client_id={self.client_id}")
@@ -486,6 +512,140 @@ class WebSocketClient:
                 "id": message_id,
                 "type": "error",
                 "error": f"Unknown message type: {message_type}",
+            }
+
+    async def _execute_http_proxy(
+        self,
+        message_id: str,
+        session_id: str,
+        method: str,
+        url: str,
+        headers: dict,
+        params: dict | None,
+        body: str | None,
+        verify_ssl: bool,
+        timeout: int,
+    ) -> dict:
+        """
+        Execute an HTTP proxy request on behalf of the server.
+
+        The proxy calls the target URL (on the local/internal network) and
+        returns the response via WebSocket so the SaaS backend can access
+        intranet data sources such as Prometheus.
+
+        Args:
+            message_id: Original message ID for correlation
+            session_id: Chat session ID for logging
+            method: HTTP method (GET/POST)
+            url: Target URL (locally accessible internal address)
+            headers: HTTP request headers
+            params: URL query parameters (GET) or None
+            body: Request body string (POST) or None
+            verify_ssl: Whether to verify HTTPS certificates
+            timeout: Request timeout in seconds
+
+        Returns:
+            dict: http_proxy_result message
+        """
+        import aiohttp
+
+        logger.info(
+            f"[HTTP-PROXY-EXEC] Executing HTTP proxy: message_id={message_id}, "
+            f"method={method}, url={url}, session_id={session_id}, timeout={timeout}s"
+        )
+
+        http_policy = (self.server_policy or {}).get("http", {})
+        if not http_policy.get("enabled", True):
+            error_msg = "HTTP proxy access is disabled by workspace policy."
+            logger.warning(f"[HTTP-PROXY-BLOCKED] {error_msg} message_id={message_id}, url={url}")
+            return {
+                "id": message_id,
+                "type": "http_proxy_result",
+                "success": False,
+                "data": {
+                    "session_id": session_id,
+                    "status_code": None,
+                    "body": None,
+                    "error": error_msg,
+                },
+            }
+
+        allowed_hosts = http_policy.get("allow_hosts", []) or []
+        if allowed_hosts:
+            parsed_url = urlparse(url)
+            hostname = parsed_url.hostname or ""
+            netloc = parsed_url.netloc
+            if hostname not in allowed_hosts and netloc not in allowed_hosts:
+                error_msg = f"HTTP proxy target host is not allowed by workspace policy: {netloc or hostname}"
+                logger.warning(f"[HTTP-PROXY-BLOCKED] {error_msg} message_id={message_id}, url={url}")
+                return {
+                    "id": message_id,
+                    "type": "http_proxy_result",
+                    "success": False,
+                    "data": {
+                        "session_id": session_id,
+                        "status_code": None,
+                        "body": None,
+                        "error": error_msg,
+                    },
+                }
+
+        try:
+            async with aiohttp.ClientSession() as http_session:
+                request_kwargs: dict = {
+                    "headers": headers,
+                    "timeout": aiohttp.ClientTimeout(total=timeout),
+                    "ssl": None if verify_ssl else False,
+                }
+                if method.upper() == "GET":
+                    if params:
+                        request_kwargs["params"] = params
+                    async with http_session.get(url, **request_kwargs) as resp:
+                        status_code = resp.status
+                        body_text = await resp.text()
+                elif method.upper() == "POST":
+                    if body is not None:
+                        request_kwargs["data"] = body
+                    async with http_session.post(url, **request_kwargs) as resp:
+                        status_code = resp.status
+                        body_text = await resp.text()
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+
+            logger.info(
+                f"[HTTP-PROXY-DONE] HTTP proxy completed: message_id={message_id}, "
+                f"url={url}, status_code={status_code}, body_len={len(body_text)}"
+            )
+
+            return {
+                "id": message_id,
+                "type": "http_proxy_result",
+                "success": True,
+                "data": {
+                    "session_id": session_id,
+                    "status_code": status_code,
+                    "body": body_text,
+                    "error": None,
+                },
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(
+                f"[HTTP-PROXY-ERROR] HTTP proxy failed: message_id={message_id}, "
+                f"url={url}, error={error_msg}",
+                exc_info=True,
+            )
+            return {
+                "id": message_id,
+                "type": "http_proxy_result",
+                "success": False,
+                "data": {
+                    "session_id": session_id,
+                    "status_code": None,
+                    "body": None,
+                    "error": error_msg,
+                },
             }
 
     async def _execute_skill_read(
@@ -660,8 +820,7 @@ class WebSocketClient:
         message_id: str,
         action: str,
         interactive_session_id: Optional[str] = None,
-        command: Optional[str] = None,
-        args: Optional[list] = None,
+        command_line: Optional[str] = None,
         cwd: Optional[str] = None,
         input_text: Optional[str] = None,
         last_stdout_seq: int = 0,
@@ -673,12 +832,9 @@ class WebSocketClient:
         start_time = time.time()
         try:
             if action == "start":
-                if not command:
-                    raise ValueError("command is required for start action")
-                full_command = command
-                if args:
-                    full_command = f"{command} {' '.join(args)}"
-                payload = await self.interactive_executor.start_session(command=full_command, cwd=cwd)
+                if not command_line:
+                    raise ValueError("command_line is required for start action")
+                payload = await self.interactive_executor.start_session(command=command_line, cwd=cwd)
             elif action == "input":
                 if not interactive_session_id:
                     raise ValueError("interactive_session_id is required for input action")
@@ -889,9 +1045,8 @@ class WebSocketClient:
     async def _execute_local_command(
             self,
             message_id: str,
-            command: str,
+            command_line: str,
             session_id: str,
-            args: list = None,
             cwd: Optional[str] = None,
             timeout: int = 300,
     ) -> dict:
@@ -900,9 +1055,8 @@ class WebSocketClient:
 
         Args:
             message_id: 消息ID
-            command: 命令名称
+            command_line: 完整命令字符串
             session_id: 聊天Session ID（required）
-            args: 命令Arguments列表
             cwd: 工作目录
             timeout: 超时时间（seconds）
 
@@ -926,23 +1080,14 @@ class WebSocketClient:
                     },
                 }
 
-            command, args = normalize_command_and_args(command, args)
-
-            # 展开Arguments中的 ~ 路径和环境变量
-            expanded_args = []
-            for arg in args:
-                # 只对看起来像路径的Arguments进行展开（包含 ~ 或 $）
-                if "~" in arg or "$" in arg:
-                    expanded_args.append(os.path.expanduser(os.path.expandvars(arg)))
-                else:
-                    expanded_args.append(arg)
-
-            # 构建完整命令（对每个参数做 shell 安全转义，避免分号等字符被误解析）
-            full_command = build_shell_command(command, expanded_args)
+            # 直接使用原始命令字符串，交由 /bin/sh 解析（保留管道、重定向等 shell 元字符）
+            # 不做 shlex.split + shlex.quote 重组，否则 | 和 2>/dev/null 会被转义成字面字符串
+            full_command = command_line.strip()
 
             # Permission check: apply server policy if available, otherwise fall back to local whitelist
             bash_policy = (self.server_policy or {}).get("bash", {})
             bash_mode = bash_policy.get("mode", "passthrough")
+            yolo_enabled = get_config().get_yolo_enabled()
 
             policy_blocked = False
             error_msg = ""
@@ -970,18 +1115,24 @@ class WebSocketClient:
                     )
             else:
                 # passthrough: use local whitelist
-                is_allowed, blocked_commands = is_command_allowed(full_command)
-                if not is_allowed:
-                    policy_blocked = True
-                    blocked_list = ", ".join(blocked_commands) if blocked_commands else command
-                    error_msg = (
-                        f"Command not permitted: {blocked_list}. "
-                        f"Please contact your workspace administrator to update the node's bash policy."
+                if yolo_enabled:
+                    logger.info(
+                        f"[CLIENT-LOCAL-EXEC-BYPASS] Local whitelist skipped because yolo=true: "
+                        f"message_id={message_id}, full_command={full_command[:200]}, client_id={self.client_id}"
                     )
-                    logger.warning(
-                        f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in local whitelist: message_id={message_id}, "
-                        f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, client_id={self.client_id}"
-                    )
+                else:
+                    is_allowed, blocked_commands = is_command_allowed(full_command)
+                    if not is_allowed:
+                        policy_blocked = True
+                        blocked_list = ", ".join(blocked_commands) if blocked_commands else command
+                        error_msg = (
+                            f"Command not permitted: {blocked_list}. "
+                            f"Please contact your workspace administrator to update the node's bash policy."
+                        )
+                        logger.warning(
+                            f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in local whitelist: message_id={message_id}, "
+                            f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, client_id={self.client_id}"
+                        )
 
             if policy_blocked:
                 return {

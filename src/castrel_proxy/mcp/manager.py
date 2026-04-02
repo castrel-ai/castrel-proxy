@@ -4,6 +4,7 @@ MCP Manager Module
 Responsible for managing MCP client connections and fetching tools information
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -339,6 +340,75 @@ class MCPManager:
                 logger.warning(f"Failed to get tool schemas from '{server_name}': {e}")
 
         logger.info(f"Total tool schemas retrieved: {total_count} from {len(result)} server(s)")
+        return result
+
+    async def get_tools_schema_resilient(
+        self,
+        raw_config: Optional[Dict[str, Dict]] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, List[Dict]]:
+        """
+        Fetch tool schemas one server at a time.
+
+        This isolates slow or unavailable MCP servers so a timeout on one server
+        does not prevent schemas from being retrieved from the others.
+
+        Args:
+            raw_config: Optional raw mcpServers config. Defaults to loading from disk.
+            timeout: Optional timeout in seconds applied per server.
+
+        Returns:
+            Dict mapping server name to list of tool schema dicts.
+        """
+        raw_config = raw_config or self.load_config()
+        if not raw_config:
+            logger.info("No MCP services configured")
+            return {}
+
+        result: Dict[str, List[Dict]] = {}
+        total_count = 0
+
+        for server_name, server_config in raw_config.items():
+            try:
+                isolated_config = convert_config_to_langchain_format({server_name: server_config})
+                isolated_client = MultiServerMCPClient(isolated_config)
+
+                get_tools_coro = isolated_client.get_tools(server_name=server_name)
+                tools = await asyncio.wait_for(get_tools_coro, timeout=timeout) if timeout else await get_tools_coro
+
+                tool_schemas = []
+                for tool in tools:
+                    schema: Dict = {
+                        "name": tool.name,
+                        "description": tool.description or "",
+                    }
+                    args_schema = getattr(tool, "args_schema", None)
+                    if args_schema is not None:
+                        if isinstance(args_schema, dict):
+                            schema["inputSchema"] = args_schema
+                        elif hasattr(args_schema, "model_json_schema"):
+                            schema["inputSchema"] = args_schema.model_json_schema()
+                        elif hasattr(args_schema, "schema"):
+                            schema["inputSchema"] = args_schema.schema()
+                        else:
+                            schema["inputSchema"] = {}
+                    else:
+                        schema["inputSchema"] = {}
+                    tool_schemas.append(schema)
+
+                total_count += len(tool_schemas)
+                result[server_name] = tool_schemas
+                logger.info(
+                    f"Retrieved schema for {len(tool_schemas)} tool(s) from '{server_name}' using isolated sync"
+                )
+            except TimeoutError:
+                logger.warning(f"Timed out while fetching tool schemas from '{server_name}'")
+            except ValueError as e:
+                logger.warning(f"Skipping MCP server '{server_name}' due to configuration error: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to get tool schemas from '{server_name}' during isolated sync: {e}")
+
+        logger.info(f"Isolated tool schema sync retrieved {total_count} tool(s) from {len(result)} server(s)")
         return result
 
     async def disconnect_all(self):

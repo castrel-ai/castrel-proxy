@@ -149,27 +149,36 @@ def pair(
 
                 typer.echo("\nConnecting to MCP servers to fetch tool schemas...")
                 try:
-                    mcp_count = await mcp_manager.connect_all()
-                    if mcp_count > 0:
-                        mcp_tools = await mcp_manager.get_tools_schema()
-                        tool_count = sum(len(v) for v in mcp_tools.values())
-                        typer.secho(f"✓ Retrieved {tool_count} tool(s) from {len(mcp_tools)} server(s)", fg=typer.colors.GREEN)
-                    else:
-                        mcp_tools = raw_configs
-                        typer.secho("⚠ No MCP connections established, using raw configs", fg=typer.colors.YELLOW)
+                    mcp_tools = await mcp_manager.get_tools_schema_resilient(raw_configs, timeout=15)
+                    tool_count = sum(len(v) for v in mcp_tools.values())
+                    synced_server_count = len(mcp_tools)
+                    failed_server_count = len(raw_configs) - synced_server_count
+
+                    if synced_server_count > 0:
+                        typer.secho(
+                            f"✓ Retrieved {tool_count} tool(s) from {synced_server_count} server(s)",
+                            fg=typer.colors.GREEN,
+                        )
+                    if failed_server_count > 0:
+                        typer.secho(
+                            f"⚠ Skipped {failed_server_count} MCP server(s) due to timeout or fetch failure",
+                            fg=typer.colors.YELLOW,
+                        )
+                    if synced_server_count == 0:
+                        mcp_tools = {name: [] for name in raw_configs.keys()}
+                        typer.secho("⚠ No MCP tool schemas retrieved, sending empty tool lists", fg=typer.colors.YELLOW)
                 except SystemExit:
                     raise
                 except Exception as e:
                     typer.secho(f"⚠ Failed to fetch tool schemas: {e}", fg=typer.colors.YELLOW)
-                    typer.echo("Falling back to raw configurations")
-                    mcp_tools = raw_configs
+                    typer.echo("Falling back to empty tool lists")
+                    mcp_tools = {name: [] for name in raw_configs.keys()}
 
                 typer.echo("Sending client capabilities to server...")
                 await api_client._send_client_info(
                     server_url, client_id, code, workspace_id, mcp_tools, skills=skills or None,
                 )
                 typer.secho("✓ Client capabilities synchronized", fg=typer.colors.GREEN)
-                await mcp_manager.disconnect_all()
 
             asyncio.run(sync_client_capabilities())
 
@@ -445,6 +454,17 @@ def unpair():
         # Confirm deletion
         confirm = typer.confirm("Are you sure you want to unpair?")
         if confirm:
+            # Stop the running daemon first so the server receives the WebSocket disconnect
+            # and updates the node status to disconnected (fixes CAST-669)
+            daemon_mgr = get_daemon_manager()
+            if daemon_mgr.is_running():
+                pid = daemon_mgr.get_pid()
+                typer.echo(f"Stopping bridge service (PID: {pid})...")
+                if daemon_mgr.stop():
+                    typer.secho("✓ Bridge stopped", fg=typer.colors.GREEN)
+                else:
+                    typer.secho("⚠ Failed to stop bridge, proceeding with unpair anyway", fg=typer.colors.YELLOW)
+
             typer.echo("Unpairing...")
             config.delete()
             typer.secho("✓ Unpaired", fg=typer.colors.GREEN)
@@ -583,25 +603,34 @@ def mcp_sync():
 
             typer.echo("\nConnecting to MCP servers to fetch tool schemas...")
             try:
-                mcp_count = await mcp_manager.connect_all()
-                if mcp_count > 0:
-                    mcp_tools = await mcp_manager.get_tools_schema()
-                    tool_count = sum(len(v) for v in mcp_tools.values())
-                    typer.secho(f"✓ Retrieved {tool_count} tool(s) from {len(mcp_tools)} server(s)", fg=typer.colors.GREEN)
-                else:
-                    mcp_tools = raw_configs
-                    typer.secho("⚠ No MCP connections established, using raw configs", fg=typer.colors.YELLOW)
+                mcp_tools = await mcp_manager.get_tools_schema_resilient(raw_configs, timeout=15)
+                tool_count = sum(len(v) for v in mcp_tools.values())
+                synced_server_count = len(mcp_tools)
+                failed_server_count = len(raw_configs) - synced_server_count
+
+                if synced_server_count > 0:
+                    typer.secho(
+                        f"✓ Retrieved {tool_count} tool(s) from {synced_server_count} server(s)",
+                        fg=typer.colors.GREEN,
+                    )
+                if failed_server_count > 0:
+                    typer.secho(
+                        f"⚠ Skipped {failed_server_count} MCP server(s) due to timeout or fetch failure",
+                        fg=typer.colors.YELLOW,
+                    )
+                if synced_server_count == 0:
+                    mcp_tools = {name: [] for name in raw_configs.keys()}
+                    typer.secho("⚠ No MCP tool schemas retrieved, sending empty tool lists", fg=typer.colors.YELLOW)
             except SystemExit:
                 raise
             except Exception as e:
                 typer.secho(f"⚠ Failed to fetch tool schemas: {e}", fg=typer.colors.YELLOW)
-                typer.echo("Falling back to raw configurations")
-                mcp_tools = raw_configs
+                typer.echo("Falling back to empty tool lists")
+                mcp_tools = {name: [] for name in raw_configs.keys()}
 
             typer.echo("\nSending to server...")
             await api_client._send_client_info(server_url, client_id, verification_code, workspace_id, mcp_tools)
             typer.secho("✓ MCP tool schemas synchronized", fg=typer.colors.GREEN)
-            await mcp_manager.disconnect_all()
 
         asyncio.run(sync_mcp_tools())
 
