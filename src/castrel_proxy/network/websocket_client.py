@@ -10,7 +10,6 @@ import logging
 import os
 import time
 import uuid
-from urllib.parse import urlparse
 from typing import Optional
 
 import aiohttp
@@ -68,7 +67,6 @@ class WebSocketClient:
         self.openclaw_check_task: Optional[asyncio.Task] = None
         self.openclaw_check_interval = 60.0  # OpenClaw check interval (seconds)
         self.last_openclaw_status = None  # Track last status to avoid duplicate notifications
-        self.server_policy = None  # Server-side policy pushed via policy_sync
 
     def _get_ws_url(self) -> str:
         """Get WebSocket URL"""
@@ -182,6 +180,7 @@ class WebSocketClient:
             cwd = data.get("cwd")
             timeout = data.get("timeout", 300)
             session_id = data.get("session_id", "")
+            policy = data.get("policy")  # 随命令下发的策略（如有则优先使用）
 
             logger.info(
                 f"[CLIENT-LOCAL-CALL] Local tool call received: message_id={message_id}, "
@@ -195,6 +194,7 @@ class WebSocketClient:
                 cwd=cwd,
                 session_id=session_id,
                 timeout=timeout,
+                policy=policy,
             )
 
         elif message_type == "mcp_tool_call":
@@ -231,17 +231,6 @@ class WebSocketClient:
                 f"file_path={file_path}, session_id={session_id}, encoding={encoding}, client_id={self.client_id}"
             )
 
-            # Filesystem read permission check
-            fs_policy = (self.server_policy or {}).get("filesystem", {})
-            if not fs_policy.get("read_enabled", True):
-                return {
-                    "id": message_id,
-                    "type": "doc_read_result",
-                    "success": False,
-                    "data": {"content": None, "encoding": "utf-8", "size": 0,
-                             "error": "File read is disabled by workspace policy."},
-                }
-
             return await self._execute_doc_read(
                 message_id=message_id,
                 file_path=file_path,
@@ -263,16 +252,6 @@ class WebSocketClient:
                 f"file_path={file_path}, content_len={len(content)}, session_id={session_id}, encoding={encoding}, "
                 f"create_dirs={create_dirs}, client_id={self.client_id}"
             )
-
-            # Filesystem write permission check
-            fs_policy = (self.server_policy or {}).get("filesystem", {})
-            if not fs_policy.get("write_enabled", True):
-                return {
-                    "id": message_id,
-                    "type": "doc_write_result",
-                    "success": False,
-                    "data": {"path": file_path, "size": 0, "error": "File write is disabled by workspace policy."},
-                }
 
             return await self._execute_doc_write(
                 message_id=message_id,
@@ -297,16 +276,6 @@ class WebSocketClient:
                 f"[CLIENT-DOC-EDIT-CALL] Doc edit call received: message_id={message_id}, "
                 f"file_path={file_path}, operation={operation}, session_id={session_id}, encoding={encoding}, client_id={self.client_id}"
             )
-
-            # Filesystem edit permission check
-            fs_policy = (self.server_policy or {}).get("filesystem", {})
-            if not fs_policy.get("edit_enabled", True):
-                return {
-                    "id": message_id,
-                    "type": "doc_edit_result",
-                    "success": False,
-                    "data": {"path": file_path, "error": "File edit is disabled by workspace policy."},
-                }
 
             return await self._execute_doc_edit(
                 message_id=message_id,
@@ -491,17 +460,6 @@ class WebSocketClient:
             # No response needed
             return None
 
-        elif message_type == "policy_sync":
-            # Server-side policy update
-            policy_data = message.get("data", {})
-            self.server_policy = policy_data
-            bash_mode = policy_data.get("bash", {}).get("mode", "passthrough")
-            logger.info(
-                f"[CLIENT-POLICY-SYNC] Policy updated: bash_mode={bash_mode}, "
-                f"client_id={self.client_id}"
-            )
-            return None
-
         else:
             # Unknown command type
             logger.warning(
@@ -553,42 +511,6 @@ class WebSocketClient:
             f"[HTTP-PROXY-EXEC] Executing HTTP proxy: message_id={message_id}, "
             f"method={method}, url={url}, session_id={session_id}, timeout={timeout}s"
         )
-
-        http_policy = (self.server_policy or {}).get("http", {})
-        if not http_policy.get("enabled", True):
-            error_msg = "HTTP proxy access is disabled by workspace policy."
-            logger.warning(f"[HTTP-PROXY-BLOCKED] {error_msg} message_id={message_id}, url={url}")
-            return {
-                "id": message_id,
-                "type": "http_proxy_result",
-                "success": False,
-                "data": {
-                    "session_id": session_id,
-                    "status_code": None,
-                    "body": None,
-                    "error": error_msg,
-                },
-            }
-
-        allowed_hosts = http_policy.get("allow_hosts", []) or []
-        if allowed_hosts:
-            parsed_url = urlparse(url)
-            hostname = parsed_url.hostname or ""
-            netloc = parsed_url.netloc
-            if hostname not in allowed_hosts and netloc not in allowed_hosts:
-                error_msg = f"HTTP proxy target host is not allowed by workspace policy: {netloc or hostname}"
-                logger.warning(f"[HTTP-PROXY-BLOCKED] {error_msg} message_id={message_id}, url={url}")
-                return {
-                    "id": message_id,
-                    "type": "http_proxy_result",
-                    "success": False,
-                    "data": {
-                        "session_id": session_id,
-                        "status_code": None,
-                        "body": None,
-                        "error": error_msg,
-                    },
-                }
 
         try:
             async with aiohttp.ClientSession() as http_session:
@@ -1049,6 +971,7 @@ class WebSocketClient:
             session_id: str,
             cwd: Optional[str] = None,
             timeout: int = 300,
+            policy: Optional[dict] = None,
     ) -> dict:
         """
         Execute local command
@@ -1084,55 +1007,61 @@ class WebSocketClient:
             # 不做 shlex.split + shlex.quote 重组，否则 | 和 2>/dev/null 会被转义成字面字符串
             full_command = command_line.strip()
 
-            # Permission check: apply server policy if available, otherwise fall back to local whitelist
-            bash_policy = (self.server_policy or {}).get("bash", {})
+            # Permission check — only passthrough and allow_all are handled here.
+            # deny_all and allowlist modes are intercepted server-side before
+            # the command reaches the proxy, so they should never arrive here.
+            # If they do (e.g. direct WS call), fall through to passthrough as
+            # a safe default.
+            bash_policy = (policy or {}).get("bash", {})
             bash_mode = bash_policy.get("mode", "passthrough")
-            yolo_enabled = get_config().get_yolo_enabled()
-
+            logger.info(f"[CLIENT-LOCAL-EXEC-INFO] Executing command: bash mode={bash_mode},bash policy={bash_policy}")
             policy_blocked = False
             error_msg = ""
 
-            if bash_mode == "deny_all":
+            if bash_mode == "allow_all":
+                # allow_all: skip all whitelist checks, execute any command
+                logger.info(
+                    f"[CLIENT-LOCAL-EXEC-ALLOW-ALL] All commands permitted by server policy (allow_all): "
+                    f"message_id={message_id}, full_command={full_command[:200]}, client_id={self.client_id}"
+                )
+            elif bash_mode == "deny_all":
+                # Normally intercepted server-side; guard here as defence-in-depth
                 policy_blocked = True
                 error_msg = "Command execution is disabled by workspace policy."
                 logger.warning(
-                    f"[CLIENT-LOCAL-EXEC-BLOCKED] Bash denied by server policy (deny_all): "
+                    f"[CLIENT-LOCAL-EXEC-BLOCKED] Bash denied by policy (deny_all, fallback guard): "
                     f"message_id={message_id}, full_command={full_command[:200]}, client_id={self.client_id}"
                 )
             elif bash_mode == "allowlist":
+                # Normally intercepted server-side; guard here as defence-in-depth
                 server_allowlist = set(bash_policy.get("allowlist", []))
                 is_allowed, blocked_commands = is_command_allowed(full_command, override_allowlist=server_allowlist)
                 if not is_allowed:
                     policy_blocked = True
-                    blocked_list = ", ".join(blocked_commands) if blocked_commands else command
+                    blocked_list = ", ".join(blocked_commands) if blocked_commands else full_command
                     error_msg = (
                         f"Command not permitted: {blocked_list}. "
                         f"Please contact your workspace administrator to update the node's bash policy."
                     )
                     logger.warning(
-                        f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in server allowlist: message_id={message_id}, "
-                        f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, client_id={self.client_id}"
+                        f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in server allowlist (fallback guard): "
+                        f"message_id={message_id}, blocked_commands={blocked_commands}, "
+                        f"full_command={full_command[:200]}, client_id={self.client_id}"
                     )
             else:
                 # passthrough: use local whitelist
-                if yolo_enabled:
-                    logger.info(
-                        f"[CLIENT-LOCAL-EXEC-BYPASS] Local whitelist skipped because yolo=true: "
-                        f"message_id={message_id}, full_command={full_command[:200]}, client_id={self.client_id}"
+                is_allowed, blocked_commands = is_command_allowed(full_command)
+                if not is_allowed:
+                    policy_blocked = True
+                    blocked_list = ", ".join(blocked_commands) if blocked_commands else full_command
+                    error_msg = (
+                        f"Command not permitted: {blocked_list}. "
+                        f"Please contact your workspace administrator to update the node's bash policy."
                     )
-                else:
-                    is_allowed, blocked_commands = is_command_allowed(full_command)
-                    if not is_allowed:
-                        policy_blocked = True
-                        blocked_list = ", ".join(blocked_commands) if blocked_commands else command
-                        error_msg = (
-                            f"Command not permitted: {blocked_list}. "
-                            f"Please contact your workspace administrator to update the node's bash policy."
-                        )
-                        logger.warning(
-                            f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in local whitelist: message_id={message_id}, "
-                            f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, client_id={self.client_id}"
-                        )
+                    logger.warning(
+                        f"[CLIENT-LOCAL-EXEC-BLOCKED] Commands not in local whitelist: message_id={message_id}, "
+                        f"blocked_commands={blocked_commands}, full_command={full_command[:200]}, client_id={self.client_id}"
+                    )
 
             if policy_blocked:
                 return {
