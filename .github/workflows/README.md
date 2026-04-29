@@ -23,6 +23,7 @@ Used for building PyInstaller binaries, supports multi-platform builds.
 
 **Features:**
 - Build single executable files on Linux (x86_64, ARM64) and macOS (x86_64, ARM64)
+- Linux builds run on GitHub-hosted runners and invoke Docker-based packaging script
 - Automatically test built binaries
 - Create GitHub Release (when pushing tags)
 - Generate SHA256 checksums
@@ -70,52 +71,17 @@ After building, you can find binaries in the following locations:
 
 ### Local Build
 
-If you want to build locally, you can use the following commands:
+If you want to build locally, use the packaging script (Docker-based for Linux):
 
 ```bash
-# Install dependencies
-uv sync --all-extras
+# Build with host architecture (maps to manylinux-x86_64 / manylinux-arm64)
+scripts/package_binary.sh --mode local
 
-# Install PyInstaller
-uv pip install pyinstaller
+# Explicit Linux x86_64 build
+scripts/package_binary.sh --mode manylinux-x86_64
 
-# Create entry script (resolves relative import issues + SSL certs for PyInstaller)
-cat > entry_point.py << 'EOF'
-#!/usr/bin/env python
-"""Entry point for PyInstaller - uses absolute imports"""
-import sys
-import os
-
-# Fix SSL certificates when running as PyInstaller bundle (required for aiohttp HTTPS)
-if getattr(sys, 'frozen', False):
-    import certifi
-    os.environ['SSL_CERT_FILE'] = certifi.where()
-    os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-
-from castrel_proxy.cli.commands import run
-if __name__ == "__main__":
-    run()
-EOF
-
-# Build
-uv run pyinstaller \
-  --onefile \
-  --name castrel-proxy \
-  --paths src \
-  --hidden-import castrel_proxy.data \
-  --hidden-import castrel_proxy.cli.commands \
-  --hidden-import typer \
-  --hidden-import aiohttp \
-  --hidden-import mcp \
-  --hidden-import langchain_mcp_adapters \
-  --hidden-import file_read_backwards \
-  --hidden-import certifi \
-  --collect-all castrel_proxy \
-  --collect-data certifi \
-  --console \
-  entry_point.py
-
-# Binary files will be in dist/ directory
+# Explicit Linux arm64 build
+scripts/package_binary.sh --mode manylinux-arm64
 ```
 
 ### Troubleshooting
@@ -129,7 +95,7 @@ If the build fails, check:
 
 ### Notes
 
-- **Linux x86_64** and **Linux ARM64** are built in `manylinux2014` containers (GLIBC 2.17 baseline, compatible with CentOS 7+ and newer distributions)
+- **Linux x86_64** and **Linux ARM64** jobs run on GitHub-hosted runners, then invoke `scripts/package_binary.sh` which builds inside `manylinux2014` containers (GLIBC 2.17 baseline)
 - Building takes some time
 - Make sure to update the version number in `pyproject.toml` before pushing a tag
 - Release will automatically extract version number from tag name (removing `v` prefix)
