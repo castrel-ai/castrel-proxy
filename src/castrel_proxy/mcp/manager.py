@@ -38,9 +38,15 @@ def _detect_transport(name: str, server_config: dict) -> str:
     if transport:
         if transport in ("stdio", "http", "sse"):
             return transport
+        # Normalize streamableHttp variants to "http"
+        # (langchain-mcp-adapters treats "http" as streamable HTTP)
+        if transport.lower().replace("-", "_").replace(" ", "") in (
+            "streamablehttp", "streamable_http",
+        ):
+            return "http"
         raise ValueError(
             f"Configuration error for server '{name}': Unknown transport type '{transport}'. "
-            f"Supported: 'stdio', 'http', 'sse'"
+            f"Supported: 'stdio', 'http', 'sse', 'streamableHttp'"
         )
 
     if server_config.get("command"):
@@ -96,6 +102,8 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
                 "transport": transport,
                 "url": server_config["url"],
             }
+            if server_config.get("headers"):
+                langchain_config[name]["headers"] = server_config["headers"]
 
     return langchain_config
 
@@ -265,7 +273,7 @@ class MCPManager:
                         "name": tool.name,
                         "description": tool.description or "",
                         "inputSchema": tool.args_schema if hasattr(tool, "args_schema") else {},
-                        "mcp_server": getattr(tool, "server_name", "unknown"),
+                        "mcp_server": server_name,
                     }
                     formatted_tools.append(tool_info)
                 total_count += len(formatted_tools)
@@ -274,11 +282,16 @@ class MCPManager:
 
             except Exception as e:
                 failed_servers.append(server_name)
-                # Log error but continue with other servers
+                # For configuration errors, always error
                 if "Configuration error" in str(e) or "Missing 'transport' key" in str(e):
                     logger.error(f"Configuration error for server '{server_name}': {e}")
                 else:
-                    logger.error(f"Failed to get tools from server '{server_name}': {e}")
+                    # HTTP/SSE servers may be temporarily unavailable (e.g. started on-demand)
+                    transport = self.server_configs.get(server_name, {}).get("transport", "stdio")
+                    if transport in ("http", "sse"):
+                        logger.warning(f"MCP server '{server_name}' not available (will retry when called): {e}")
+                    else:
+                        logger.error(f"Failed to get tools from server '{server_name}': {e}")
 
         if failed_servers:
             logger.warning(
@@ -434,27 +447,89 @@ class MCPManager:
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def install_server(self, name: str, config: dict) -> bool:
+    def install_server(self, name: str, config: dict, env_defaults: Optional[Dict] = None) -> bool:
         """
         Install (add or update) an MCP server config into mcp.json.
+
+        If the existing entry already has env configured, preserve it and only
+        update non-env fields. If no existing env, write the full config.
+        Also writes mcp.json.example with env values replaced by placeholder text.
 
         Args:
             name: MCP server name (unique identifier)
             config: Config dict containing transport/command/args/url/env fields
+            env_defaults: Optional env variable template {KEY: {placeholder, description, required}}
         Returns:
             True on success
         """
         try:
             data = self._read_raw_config()
-            data.setdefault("mcpServers", {})[name] = config
+            existing = data.get("mcpServers", {}).get(name, {})
+
+            # Preserve existing env if already configured; only overwrite non-env parts
+            if existing.get("env"):
+                merged = {k: v for k, v in config.items() if k != "env"}
+                merged["env"] = existing["env"]
+                logger.info(f"[MCP-INSTALL] Preserving existing env for: {name}")
+            else:
+                merged = config
+
+            data.setdefault("mcpServers", {})[name] = merged
             self._write_raw_config(data)
             # Reset client so next tool_call reconnects
             self.client = None
             logger.info(f"[MCP-INSTALL] Installed MCP server: {name}")
+
+            # Always write example file (overwrite the corresponding entry)
+            self._write_example_config(name, config, env_defaults or {})
             return True
         except Exception as e:
             logger.error(f"[MCP-INSTALL] Failed to install {name}: {e}")
             return False
+
+    def _write_example_config(self, name: str, config: dict, env_defaults: Dict) -> None:
+        """
+        Write mcp.json.example with env values replaced by placeholder text.
+        Always overwrites the entry for the given server name.
+
+        Env keys are sourced from both config["env"] and env_defaults keys,
+        so that env vars show up in the example even when no real values were sent.
+
+        Args:
+            name: MCP server name
+            config: Config dict (may contain real env values)
+            env_defaults: env variable metadata {KEY: {placeholder, description, required}}
+        """
+        example_file = self.config_file.parent / "mcp.json.example"
+        try:
+            # Read existing example file or start fresh
+            if example_file.exists():
+                with open(example_file, "r", encoding="utf-8") as f:
+                    example_data = json.load(f)
+            else:
+                example_data = {"mcpServers": {}}
+
+            # Build example config: same as real config but env values are placeholders
+            example_config = {k: v for k, v in config.items() if k != "env"}
+
+            # Collect env keys from both actual env and env_defaults
+            all_env_keys = set(config.get("env", {}).keys()) | set(env_defaults.keys())
+            if all_env_keys:
+                example_env = {}
+                for key in all_env_keys:
+                    meta = env_defaults.get(key, {})
+                    placeholder = meta.get("placeholder") if isinstance(meta, dict) else None
+                    example_env[key] = placeholder if placeholder else f"<{key}>"
+                example_config["env"] = example_env
+
+            # Always overwrite the example entry for this server
+            example_data.setdefault("mcpServers", {})[name] = example_config
+            example_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(example_file, "w", encoding="utf-8") as f:
+                json.dump(example_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"[MCP-INSTALL] Written example config: {example_file}")
+        except Exception as e:
+            logger.error(f"[MCP-INSTALL] Failed to write example config for {name}: {e}")
 
     def remove_server(self, name: str) -> bool:
         """
@@ -476,6 +551,20 @@ class MCPManager:
                 logger.info(f"[MCP-REMOVE] Removed MCP server: {name}")
             else:
                 logger.warning(f"[MCP-REMOVE] Server not found: {name}")
+
+            # Also remove from example file
+            example_file = self.config_file.parent / "mcp.json.example"
+            if example_file.exists():
+                try:
+                    with open(example_file, "r", encoding="utf-8") as f:
+                        example_data = json.load(f)
+                    if name in example_data.get("mcpServers", {}):
+                        del example_data["mcpServers"][name]
+                        with open(example_file, "w", encoding="utf-8") as f:
+                            json.dump(example_data, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    logger.warning(f"[MCP-REMOVE] Failed to update example config for {name}: {e}")
+
             return True
         except Exception as e:
             logger.error(f"[MCP-REMOVE] Failed to remove {name}: {e}")

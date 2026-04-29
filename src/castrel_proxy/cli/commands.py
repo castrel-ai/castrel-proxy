@@ -707,6 +707,92 @@ def skills_sync():
         raise typer.Exit(1)
 
 
+@app.command()
+def version():
+    """
+    Show version information
+    """
+    from .. import __version__, __author__
+    typer.secho(f"castrel-proxy", bold=True, nl=False)
+    typer.echo(f" v{__version__}")
+    typer.echo(f"Author: {__author__}")
+
+
+@app.command()
+def uninstall(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    keep_logs: bool = typer.Option(False, "--keep-logs", help="Keep log files"),
+):
+    """
+    Uninstall proxy - remove all local data and configuration
+
+    Stops the running service (if any), removes pairing configuration,
+    PID file, and log files from ~/.castrel/
+
+    To also remove the package itself:
+      pip uninstall castrel-proxy
+    """
+    config_obj = get_config()
+    daemon_mgr = get_daemon_manager()
+
+    typer.secho("=== Uninstall Castrel Proxy ===", bold=True)
+    typer.echo("\nThe following local data will be removed:")
+    typer.echo(f"  Config file : {config_obj.config_file}")
+    typer.echo(f"  PID file    : {daemon_mgr.pid_file}")
+    if not keep_logs:
+        typer.echo(f"  Log file    : {daemon_mgr.log_file}")
+    else:
+        typer.echo(f"  Log file    : {daemon_mgr.log_file} (kept)")
+
+    if not yes:
+        confirm = typer.confirm("\nProceed with uninstall?")
+        if not confirm:
+            typer.echo("Cancelled")
+            raise typer.Exit(0)
+
+    # Stop daemon if running
+    if daemon_mgr.is_running():
+        pid = daemon_mgr.get_pid()
+        typer.echo(f"\nStopping bridge service (PID: {pid})...")
+        if daemon_mgr.stop():
+            typer.secho("✓ Bridge stopped", fg=typer.colors.GREEN)
+        else:
+            typer.secho("⚠ Failed to stop bridge, proceeding anyway", fg=typer.colors.YELLOW)
+
+    typer.echo("")
+
+    # Remove config file
+    if config_obj.exists():
+        try:
+            config_obj.delete()
+            typer.secho(f"✓ Removed config file", fg=typer.colors.GREEN)
+        except ConfigError as e:
+            typer.secho(f"⚠ {e}", fg=typer.colors.YELLOW)
+    else:
+        typer.echo("  Config file not found, skipping")
+
+    # Remove PID file
+    if daemon_mgr.pid_file.exists():
+        try:
+            daemon_mgr.pid_file.unlink()
+            typer.secho("✓ Removed PID file", fg=typer.colors.GREEN)
+        except Exception as e:
+            typer.secho(f"⚠ Failed to remove PID file: {e}", fg=typer.colors.YELLOW)
+
+    # Remove log file
+    if not keep_logs:
+        if daemon_mgr.log_file.exists():
+            try:
+                daemon_mgr.log_file.unlink()
+                typer.secho("✓ Removed log file", fg=typer.colors.GREEN)
+            except Exception as e:
+                typer.secho(f"⚠ Failed to remove log file: {e}", fg=typer.colors.YELLOW)
+
+    typer.secho("\n✓ Local data removed", fg=typer.colors.GREEN)
+    typer.echo("Note: The castrel-proxy package itself was not removed.")
+    typer.echo("To fully remove the package, run: pip uninstall castrel-proxy")
+
+
 def run():
     """Entry point for the CLI application"""
     # 如果没有任何参数（只有程序名），则添加 --help 参数

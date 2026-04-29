@@ -71,6 +71,12 @@ rustc
 go
 java
 javac
+jps
+jmap
+jstack
+jstat
+jcmd
+jfr
 mvn
 gradle
 ruby
