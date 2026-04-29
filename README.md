@@ -259,6 +259,9 @@ scripts/package_binary.sh --mode local
 # Build Linux x86_64 binary with manylinux2014 (glibc 2.17 baseline)
 scripts/package_binary.sh --mode manylinux-x86_64
 
+# Build with explicit CPython version used in manylinux container
+scripts/package_binary.sh --mode manylinux-x86_64 --python-version 3.11.9
+
 # Build Linux arm64 binary with manylinux2014 (glibc 2.17 baseline)
 scripts/package_binary.sh --mode manylinux-arm64
 
@@ -272,6 +275,7 @@ scripts/package_binary.sh --mode manylinux-x86_64 --clean-cache
 > Note: Docker cannot produce native macOS binaries. Use GitHub Actions macOS runners to build `castrel-proxy-macos-arm64` and `castrel-proxy-macos-x86_64`.
 
 By default, build cache is enabled and stored under `.cache/package_binary/` (pip + PyInstaller cache) to speed up subsequent builds.
+The first Linux build may take longer because it can bootstrap OpenSSL and shared CPython in the container.
 
 ## 🤝 Contributing
 
