@@ -250,6 +250,29 @@ flake8 src/
 mypy src/
 ```
 
+### Build Binary (Docker)
+
+```bash
+# Build with host architecture (docker-only)
+scripts/package_binary.sh --mode local
+
+# Build Linux x86_64 binary with manylinux2014 (glibc 2.17 baseline)
+scripts/package_binary.sh --mode manylinux-x86_64
+
+# Build Linux arm64 binary with manylinux2014 (glibc 2.17 baseline)
+scripts/package_binary.sh --mode manylinux-arm64
+
+# Disable cache (for clean build)
+scripts/package_binary.sh --mode manylinux-x86_64 --no-cache
+
+# Clean cache directory before build
+scripts/package_binary.sh --mode manylinux-x86_64 --clean-cache
+```
+
+> Note: Docker cannot produce native macOS binaries. Use GitHub Actions macOS runners to build `castrel-proxy-macos-arm64` and `castrel-proxy-macos-x86_64`.
+
+By default, build cache is enabled and stored under `.cache/package_binary/` (pip + PyInstaller cache) to speed up subsequent builds.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

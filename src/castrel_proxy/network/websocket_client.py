@@ -323,6 +323,7 @@ class WebSocketClient:
             item_id = data.get("item_id", "")
             mcp_config = data.get("mcp_config", {})
             env = data.get("env", {})
+            env_defaults = data.get("env_defaults", {})
             logger.info(
                 f"[CLIENT-MCP-INSTALL] MCP install received: message_id={message_id}, "
                 f"item_id={item_id}, client_id={self.client_id}"
@@ -330,7 +331,15 @@ class WebSocketClient:
             if env:
                 mcp_config = dict(mcp_config)
                 mcp_config["env"] = env
-            success = self.mcp_manager.install_server(item_id, mcp_config)
+            elif env_defaults:
+                # No real env values but env_defaults defines what's needed
+                # Use placeholder values as template for the user to fill in
+                mcp_config = dict(mcp_config)
+                mcp_config["env"] = {
+                    key: (meta.get("placeholder", f"<{key}>") if isinstance(meta, dict) else f"<{key}>")
+                    for key, meta in env_defaults.items()
+                }
+            success = self.mcp_manager.install_server(item_id, mcp_config, env_defaults)
             if success:
                 self._schedule_capabilities_sync(reason=f"mcp_install:{item_id}")
             return {
@@ -710,8 +719,14 @@ class WebSocketClient:
 
                 mcp_tools = await self.mcp_manager.get_all_tools()
 
-                if raw_configs and not mcp_tools:
-                    mcp_tools = {name: [] for name in raw_configs.keys()}
+                # Ensure servers that failed tool discovery still appear in the
+                # sync so the backend knows they are configured (with empty tool
+                # lists).  The old logic only kicked in when *all* servers failed
+                # (``not mcp_tools``), silently dropping partially-failed ones.
+                if raw_configs:
+                    for name in raw_configs:
+                        if name not in mcp_tools:
+                            mcp_tools[name] = []
             except Exception as e:
                 logger.warning(
                     f"[CLIENT-CAP-SYNC-MCP-WARN] Failed to build MCP capability snapshot: "
@@ -815,14 +830,39 @@ class WebSocketClient:
             }
 
     async def _send_heartbeat(self):
-        """Send heartbeat periodically"""
+        """Send heartbeat periodically, with sleep/wake detection."""
         logger.info(
             f"[CLIENT-HEARTBEAT-START] Heartbeat task started: interval={self.heartbeat_interval}s, "
             f"client_id={self.client_id}"
         )
 
+        # Track wall-clock vs monotonic time to detect system sleep/wake.
+        # On macOS, time.monotonic() does NOT advance during sleep, while
+        # time.time() does. A large divergence means the machine was asleep.
+        last_wall = time.time()
+        last_mono = time.monotonic()
+
         while self.running and self.ws and not self.ws.closed:
             try:
+                # --- Sleep/wake detection ---
+                now_wall = time.time()
+                now_mono = time.monotonic()
+                wall_elapsed = now_wall - last_wall
+                mono_elapsed = now_mono - last_mono
+                # If wall clock jumped more than 2× the heartbeat interval ahead
+                # of the monotonic clock, the system was asleep. Force-close the
+                # stale WS so the reconnect loop kicks in immediately.
+                if wall_elapsed - mono_elapsed > self.heartbeat_interval * 2:
+                    logger.info(
+                        f"[CLIENT-WAKE-DETECT] System wake detected: wall_elapsed={wall_elapsed:.0f}s, "
+                        f"mono_elapsed={mono_elapsed:.0f}s, closing stale WS to force reconnect, "
+                        f"client_id={self.client_id}"
+                    )
+                    await self.ws.close()
+                    break
+                last_wall = now_wall
+                last_mono = now_mono
+
                 # Send heartbeat message
                 heartbeat_msg = {
                     "id": str(uuid.uuid4()),
@@ -1165,7 +1205,15 @@ class WebSocketClient:
                 f"client_id={self.client_id}"
             )
 
-            # Call MCP tool
+            # Ensure MCP client is available; attempt reconnect if needed
+            if not self.mcp_manager.client:
+                raw_configs = self.mcp_manager.get_raw_configs()
+                if raw_configs:
+                    logger.info(
+                        f"[CLIENT-MCP-EXEC-RECONNECT] MCP client is None, attempting reconnect: "
+                        f"message_id={message_id}, client_id={self.client_id}"
+                    )
+                    await self.mcp_manager.connect_all(strict=False)
             if not self.mcp_manager.client:
                 logger.error(
                     f"[CLIENT-MCP-EXEC-ERROR] MCP client not initialized: message_id={message_id}, "
@@ -1183,19 +1231,51 @@ class WebSocketClient:
                     },
                 }
 
-            # 执行工具
-            tools = await self.mcp_manager.client.get_tools(server_name=server_name)
-            current_tool = None
-            # Iterate through tool_name to get corresponding tool
-            for tool in tools:
-                if tool.name == tool_name:
-                    current_tool = tool
-                    break
-            if not current_tool:
-                logger.error(
-                    f"[CLIENT-MCP-EXEC-ERROR] MCP tool not found: message_id={message_id}, "
-                    f"server={server_name}, tool={tool_name}, available_tools={[t.name for t in tools]}, "
-                    f"client_id={self.client_id}"
+            # Use a single session for both tool verification and execution.
+            # Previously get_tools() + ainvoke() spawned TWO subprocesses per
+            # call (each creates a temporary stdio session). Heavy MCP servers
+            # like mcp-mat could fail on the second spawn with "Connection closed".
+            async with self.mcp_manager.client.session(server_name) as session:
+                # Verify the tool exists
+                tools_result = await session.list_tools()
+                available_names = [t.name for t in tools_result.tools]
+                if tool_name not in available_names:
+                    logger.error(
+                        f"[CLIENT-MCP-EXEC-ERROR] MCP tool not found: message_id={message_id}, "
+                        f"server={server_name}, tool={tool_name}, available_tools={available_names}, "
+                        f"client_id={self.client_id}"
+                    )
+                    return {
+                        "id": message_id,
+                        "type": "mcp_tool_result",
+                        "success": False,
+                        "data": {
+                            "server_name": server_name,
+                            "tool_name": tool_name,
+                            "result": None,
+                            "error": f"Execute MCP tool失败: tool不存在, available={available_names}",
+                        },
+                    }
+
+                # Execute the tool within the same session (same subprocess)
+                call_result = await session.call_tool(tool_name, arguments)
+
+            # Convert CallToolResult to JSON-serializable string
+            result_parts = []
+            for content in call_result.content:
+                if hasattr(content, "text"):
+                    result_parts.append(content.text)
+                elif hasattr(content, "data"):
+                    mime = getattr(content, "mimeType", "binary")
+                    result_parts.append(f"[{mime} data]")
+            result = "\n".join(result_parts) if result_parts else str(call_result.content)
+
+            if call_result.isError:
+                elapsed = time.time() - start_time
+                logger.warning(
+                    f"[CLIENT-MCP-EXEC-TOOL-ERROR] MCP tool returned error: message_id={message_id}, "
+                    f"server={server_name}, tool={tool_name}, elapsed={elapsed:.2f}s, "
+                    f"client_id={self.client_id}, error={result[:500]}"
                 )
                 return {
                     "id": message_id,
@@ -1205,11 +1285,9 @@ class WebSocketClient:
                         "server_name": server_name,
                         "tool_name": tool_name,
                         "result": None,
-                        "error": "Execute MCP tool失败: tool不存在",
+                        "error": result,
                     },
                 }
-
-            result = await current_tool.ainvoke(input=arguments)
 
             elapsed = time.time() - start_time
             logger.info(

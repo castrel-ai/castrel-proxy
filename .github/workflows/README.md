@@ -129,7 +129,7 @@ If the build fails, check:
 
 ### Notes
 
-- **Linux x86_64** and **Linux ARM64** are built in `python:3.11-bullseye` container (Debian 11, GLIBC 2.31, runs on Ubuntu 20.04+)
+- **Linux x86_64** and **Linux ARM64** are built in `manylinux2014` containers (GLIBC 2.17 baseline, compatible with CentOS 7+ and newer distributions)
 - Building takes some time
 - Make sure to update the version number in `pyproject.toml` before pushing a tag
 - Release will automatically extract version number from tag name (removing `v` prefix)
