@@ -1,6 +1,12 @@
 """Castrel Bridge Proxy - Remote command execution bridge client"""
 
-__version__ = "0.1.5a1"
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("castrel-proxy")
+except PackageNotFoundError:
+    __version__ = "0.1.11"
+
 __author__ = "Castrel Team"
 __license__ = "MIT"
 
