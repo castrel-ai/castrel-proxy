@@ -8,7 +8,9 @@ import asyncio
 import base64
 import json
 import logging
+import shutil
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 import typer
@@ -724,16 +726,19 @@ def uninstall(
     keep_logs: bool = typer.Option(False, "--keep-logs", help="Keep log files"),
 ):
     """
-    Uninstall proxy - remove all local data and configuration
+    Uninstall proxy - remove all local data, configuration, and the binary itself
 
     Stops the running service (if any), removes pairing configuration,
-    PID file, and log files from ~/.castrel/
-
-    To also remove the package itself:
-      pip uninstall castrel-proxy
+    PID file, log files from ~/.castrel/, and the castrel-proxy binary.
     """
     config_obj = get_config()
     daemon_mgr = get_daemon_manager()
+
+    # Resolve binary path (works for both script-installed binary and pip-installed entry point)
+    binary_path: Path | None = None
+    resolved = shutil.which("castrel-proxy")
+    if resolved:
+        binary_path = Path(resolved).resolve()
 
     typer.secho("=== Uninstall Castrel Proxy ===", bold=True)
     typer.echo("\nThe following local data will be removed:")
@@ -743,6 +748,8 @@ def uninstall(
         typer.echo(f"  Log file    : {daemon_mgr.log_file}")
     else:
         typer.echo(f"  Log file    : {daemon_mgr.log_file} (kept)")
+    if binary_path and binary_path.exists():
+        typer.echo(f"  Binary      : {binary_path}")
 
     if not yes:
         confirm = typer.confirm("\nProceed with uninstall?")
@@ -788,9 +795,18 @@ def uninstall(
             except Exception as e:
                 typer.secho(f"⚠ Failed to remove log file: {e}", fg=typer.colors.YELLOW)
 
-    typer.secho("\n✓ Local data removed", fg=typer.colors.GREEN)
-    typer.echo("Note: The castrel-proxy package itself was not removed.")
-    typer.echo("To fully remove the package, run: pip uninstall castrel-proxy")
+    # Remove binary (installed by install.sh)
+    if binary_path and binary_path.exists():
+        try:
+            binary_path.unlink()
+            typer.secho(f"✓ Removed binary: {binary_path}", fg=typer.colors.GREEN)
+        except PermissionError:
+            typer.secho(f"⚠ No permission to remove binary: {binary_path}", fg=typer.colors.YELLOW)
+            typer.echo(f"  Run manually: rm {binary_path}")
+        except Exception as e:
+            typer.secho(f"⚠ Failed to remove binary: {e}", fg=typer.colors.YELLOW)
+
+    typer.secho("\n✓ Castrel Proxy uninstalled successfully", fg=typer.colors.GREEN)
 
 
 def run():
