@@ -1,6 +1,6 @@
 [project]
 name = "castrel-proxy"
-version = "0.1.11"
+version = "0.1.12"
 description = "A lightweight remote command execution bridge client with MCP integration"
 readme = "README.md"
 requires-python = ">=3.10"

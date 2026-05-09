@@ -1,0 +1,147 @@
+# syntax=docker/dockerfile:1.7
+
+# Build stage
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock LICENSE README.md ./
+RUN --mount=type=cache,id=castrel-uv-builder-cache,target=/root/.cache/uv,sharing=locked \
+    uv sync --frozen --no-dev
+
+COPY src ./src
+RUN --mount=type=cache,id=castrel-uv-builder-cache,target=/root/.cache/uv,sharing=locked \
+    uv pip install .
+
+# Runtime stage
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime-base
+
+WORKDIR /app
+
+RUN --mount=type=cache,id=castrel-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=castrel-apt-lists,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends tini curl ca-certificates gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && apt-get install -y --no-install-recommends nodejs && \
+    # curl/gnupg 仅用于添加 NodeSource 源，安装完毕后可删除
+    apt-get purge -y --auto-remove curl gnupg && \
+    rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/nodesource.list /etc/apt/keyrings/nodesource.gpg
+
+COPY --from=builder /app/.venv /app/.venv
+COPY mcp-bundle.template.yaml /app/mcp-bundle.template.yaml
+COPY scripts/generate_mcp_bundle_lock.py /app/scripts/generate_mcp_bundle_lock.py
+COPY config/mcp-empty.json /app/mcp-empty.json
+
+ARG MCP_BUNDLE_STRICT_LATEST=0
+RUN if [ "$MCP_BUNDLE_STRICT_LATEST" = "1" ]; then \
+        python /app/scripts/generate_mcp_bundle_lock.py \
+            --input /app/mcp-bundle.template.yaml \
+            --output /app/mcp-bundle.yaml \
+            --strict-latest; \
+    else \
+        python /app/scripts/generate_mcp_bundle_lock.py \
+            --input /app/mcp-bundle.template.yaml \
+            --output /app/mcp-bundle.yaml; \
+    fi && \
+    cp /app/mcp-bundle.yaml /app/mcp-bundle.lock.yaml
+
+ARG PG_MCP_VERSION=3.3.6
+ARG GIT_MCP_VERSION=2026.1.14
+ARG GRAFANA_MCP_VERSION=0.12.1
+ARG REDIS_MCP_VERSION=0.5.0
+ARG RABBITMQ_MCP_VERSION=2.2.4
+RUN --mount=type=cache,id=castrel-pip-cache,target=/root/.cache/pip,sharing=locked \
+    python -m venv /opt/mcp-tools/git && \
+    /opt/mcp-tools/git/bin/pip install --no-cache-dir "mcp-server-git==${GIT_MCP_VERSION}" && \
+    python -m venv /opt/mcp-tools/grafana && \
+    /opt/mcp-tools/grafana/bin/pip install --no-cache-dir "mcp-grafana==${GRAFANA_MCP_VERSION}" && \
+    python -m venv /opt/mcp-tools/redis && \
+    /opt/mcp-tools/redis/bin/pip install --no-cache-dir "redis-mcp-server==${REDIS_MCP_VERSION}" && \
+    python -m venv /opt/mcp-tools/rabbitmq && \
+    /opt/mcp-tools/rabbitmq/bin/pip install --no-cache-dir "amq-mcp-server-rabbitmq==${RABBITMQ_MCP_VERSION}" && \
+    python -m venv /opt/mcp-tools/postgresql && \
+    /opt/mcp-tools/postgresql/bin/pip install --no-cache-dir "mcp-postgresql-ops==${PG_MCP_VERSION}" && \
+    # 清理所有 Python venv 中的字节码缓存和测试文件
+    find /opt/mcp-tools/git /opt/mcp-tools/grafana /opt/mcp-tools/redis \
+         /opt/mcp-tools/rabbitmq /opt/mcp-tools/postgresql \
+        \( -type d -name '__pycache__' -o -type d -name 'test' -o -type d -name 'tests' \
+           -o -name '*.pyc' -o -name '*.pyo' \) \
+        -exec rm -rf {} + 2>/dev/null || true
+
+ARG TIME_MCP_VERSION=1.0.0
+ARG FETCH_MCP_VERSION=1.1.2
+ARG MEMORY_MCP_VERSION=2026.1.26
+ARG K8S_MCP_VERSION=0.0.61
+ARG SEQUENTIAL_THINKING_MCP_VERSION=2025.12.18
+ARG MYSQL_MCP_VERSION=2.0.8
+ARG MAT_MCP_VERSION=0.1.0
+ARG MONGODB_MCP_VERSION=1.10.0
+ARG ELASTICSEARCH_MCP_VERSION=0.3.1
+ARG DBHUB_MCP_VERSION=0.21.2
+ARG DOCKER_MCP_VERSION=1.0.0
+# 所有 npm MCP 合并到单一 prefix，npm 可跨包去重共享依赖（@modelcontextprotocol/sdk、zod 等）
+RUN --mount=type=cache,id=castrel-npm-global-cache,target=/root/.npm,sharing=locked \
+    npm install -g --prefix /opt/mcp-tools/npm \
+        "@guanxiong/mcp-server-time@${TIME_MCP_VERSION}" \
+        "@modelcontextprotocol/server-filesystem" \
+        "mcp-fetch-server@${FETCH_MCP_VERSION}" \
+        "@modelcontextprotocol/server-memory@${MEMORY_MCP_VERSION}" \
+        "kubernetes-mcp-server@${K8S_MCP_VERSION}" \
+        "@modelcontextprotocol/server-sequential-thinking@${SEQUENTIAL_THINKING_MCP_VERSION}" \
+        "@benborla29/mcp-server-mysql@${MYSQL_MCP_VERSION}" \
+        "mcp-mat@${MAT_MCP_VERSION}" \
+        "mongodb-mcp-server@${MONGODB_MCP_VERSION}" \
+        "@elastic/mcp-server-elasticsearch@${ELASTICSEARCH_MCP_VERSION}" \
+        "@bytebase/dbhub@${DBHUB_MCP_VERSION}" \
+        "mcp-server-docker@${DOCKER_MCP_VERSION}" && \
+    # 删除 node_modules 中无需运行的文件，减少镜像体积
+    find /opt/mcp-tools/npm/lib/node_modules -type d \( -name 'test' -o -name '__tests__' -o -name '.cache' \) \
+        -exec rm -rf {} + 2>/dev/null || true && \
+    find /opt/mcp-tools/npm/lib/node_modules -maxdepth 4 \
+        \( -name '*.test.js' -o -name '*.spec.js' -o -name '*.test.ts' -o -name '*.spec.ts' \) \
+        -delete 2>/dev/null || true && \
+    # 删除 TypeScript 类型声明（.d.ts）和 source map（.map）——运行时不需要
+    find /opt/mcp-tools/npm/lib/node_modules \
+        \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.js.map' -o -name '*.mjs.map' \) \
+        -delete 2>/dev/null || true && \
+    # 删除各包的文档和变更日志
+    find /opt/mcp-tools/npm/lib/node_modules -maxdepth 2 \
+        \( -name 'README*' -o -name 'CHANGELOG*' -o -name 'HISTORY*' -o -name 'LICENSE*' -o -name '*.md' \) \
+        -delete 2>/dev/null || true
+
+# kafka-mcp-server 是 Go binary，无 npm/pip 包，用 Python urllib 下载（无需额外安装 curl）
+ARG KAFKA_MCP_VERSION=2.0.2
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+    python3 -c "import sys,urllib.request,tarfile,io,os;a,v=sys.argv[1],sys.argv[2];u='https://github.com/tuannvm/kafka-mcp-server/releases/download/v'+v+'/kafka-mcp-server_'+v+'_linux_'+a+'.tar.gz';d=urllib.request.urlopen(u).read();tf=tarfile.open(fileobj=io.BytesIO(d),mode='r:gz');tf.extract('kafka-mcp-server','/usr/local/bin');tf.close();os.chmod('/usr/local/bin/kafka-mcp-server',0o755)" \
+    "$ARCH" "${KAFKA_MCP_VERSION}"
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="/app/src" \
+    UV_CACHE_DIR="/opt/castrel-cache/uv" \
+    npm_config_cache="/opt/castrel-cache/npm"
+
+FROM runtime-base AS runtime
+
+# 所有 builtin MCP 均已全局安装，prewarm cache 对 bundled 镜像无意义；仅创建空目录供自定义 MCP 回退路径写入
+RUN mkdir -p /opt/castrel-cache/uv /opt/castrel-cache/npm
+
+ENV NPM_CONFIG_PREFER_OFFLINE=true
+
+RUN useradd --create-home --shell /bin/bash castrel && \
+    mkdir -p /home/castrel/.castrel && \
+    cp /app/mcp-empty.json /home/castrel/.castrel/mcp.json && \
+    chown -R castrel:castrel /app /home/castrel /opt/castrel-cache /opt/mcp-tools/npm /opt/mcp-tools/git /opt/mcp-tools/grafana /opt/mcp-tools/redis /opt/mcp-tools/rabbitmq /opt/mcp-tools/postgresql
+
+USER castrel
+RUN /app/.venv/bin/python -c \
+    "from castrel_proxy.security.whitelist import init_whitelist_file; init_whitelist_file()"
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import castrel_proxy" || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "castrel-proxy"]
+CMD ["start"]

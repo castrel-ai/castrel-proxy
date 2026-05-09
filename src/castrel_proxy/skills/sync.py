@@ -17,6 +17,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from ..core.client_id import get_machine_metadata
 from .manager import SkillsManager, get_skills_manager
 from .validator import check_zip_safety, validate_skill
 
@@ -60,6 +61,7 @@ class SkillSyncManager:
                 "skills": skills_info,
                 "mcp_tools": mcp_tools,
                 "capabilities_hash": capabilities_hash,
+                "machine_metadata": get_machine_metadata(),
             },
         }
 

@@ -7,13 +7,26 @@ Responsible for managing MCP client connections and fetching tools information
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.sessions import create_session
+from mcp import ClientSession
 
 logger = logging.getLogger(__name__)
+
+
+def _build_runtime_cache_env() -> Dict[str, str]:
+    """Collect runtime cache env that should be preserved for stdio MCP processes."""
+    cache_env: Dict[str, str] = {}
+    for key in ("UV_CACHE_DIR", "npm_config_cache", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR"):
+        value = os.environ.get(key)
+        if value:
+            cache_env[key] = value
+    return cache_env
 
 
 def _detect_transport(name: str, server_config: dict) -> str:
@@ -77,6 +90,7 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
         ValueError: When configuration is invalid
     """
     langchain_config = {}
+    runtime_cache_env = _build_runtime_cache_env()
 
     for name, server_config in config_data.items():
         transport = _detect_transport(name, server_config)
@@ -90,8 +104,12 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
                 "command": server_config["command"],
                 "args": server_config.get("args", []),
             }
-            if server_config.get("env"):
-                entry["env"] = server_config["env"]
+            merged_env = dict(server_config.get("env", {}))
+            # Preserve image prewarm cache env even when MCP server defines its own env.
+            for key, value in runtime_cache_env.items():
+                merged_env.setdefault(key, value)
+            if merged_env:
+                entry["env"] = merged_env
             langchain_config[name] = entry
 
         else:
@@ -106,6 +124,189 @@ def convert_config_to_langchain_format(config_data: dict) -> dict:
                 langchain_config[name]["headers"] = server_config["headers"]
 
     return langchain_config
+
+
+_RECONNECT_BASE_DELAY = 1.0
+_RECONNECT_MAX_DELAY = 60.0
+
+
+class _PersistentSession:
+    """Holds a long-lived MCP ClientSession for a single stdio server.
+
+    The session is started in a background task that enters the stdio_client +
+    ClientSession async context managers and then waits on an asyncio.Event.
+    The event is only set when the session should be torn down, which keeps
+    the subprocess alive for the lifetime of the manager.
+
+    A watchdog task monitors the session task and automatically reconnects
+    with exponential backoff when the process crashes. If the session is None
+    at call time, callers can also trigger a synchronous reconnect as fallback.
+    """
+
+    def __init__(self, server_name: str, connection_config: dict):
+        self.server_name = server_name
+        self.connection_config = connection_config
+        self.session: Optional[ClientSession] = None
+        self._ready = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._error: Optional[Exception] = None
+        self._reconnect_delay = _RECONNECT_BASE_DELAY
+        # Prevents reconnect_now() and _watchdog() from spawning concurrent _run tasks
+        self._reconnect_lock = asyncio.Lock()
+
+    async def start(self) -> bool:
+        """Spawn the session task + watchdog and wait until the session is ready."""
+        self._stop.clear()
+        self._ready.clear()
+        self._error = None
+        self._task = asyncio.create_task(self._run(), name=f"mcp-persistent-{self.server_name}")
+        try:
+            await asyncio.wait_for(asyncio.shield(self._ready.wait()), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error(f"[PERSISTENT-SESSION] Timed out starting session for '{self.server_name}'")
+            await self.stop()
+            return False
+        if self._error:
+            logger.error(f"[PERSISTENT-SESSION] Failed to start session for '{self.server_name}': {self._error}")
+            return False
+        # Start watchdog only after the first successful connect
+        self._watchdog_task = asyncio.create_task(
+            self._watchdog(), name=f"mcp-watchdog-{self.server_name}"
+        )
+        self._reconnect_delay = _RECONNECT_BASE_DELAY
+        return True
+
+    async def _run(self):
+        try:
+            async with create_session(self.connection_config) as session:
+                await session.initialize()
+                self.session = session
+                self._ready.set()
+                logger.info(f"[PERSISTENT-SESSION] Session ready for '{self.server_name}'")
+                await self._stop.wait()
+        except asyncio.CancelledError:
+            # Cancelled by stop() or watchdog timeout — not an error, don't set _error
+            raise
+        except Exception as e:
+            self._error = e
+        finally:
+            self.session = None
+            # Always unblock any waiter on _ready (e.g. watchdog after cancel+timeout)
+            self._ready.set()
+            logger.info(f"[PERSISTENT-SESSION] Session closed for '{self.server_name}'")
+
+    async def _watchdog(self):
+        """Monitor the session task and reconnect with exponential backoff on crash."""
+        while not self._stop.is_set():
+            # Wait for the current session task to finish
+            if self._task and not self._task.done():
+                try:
+                    await asyncio.shield(self._task)
+                except BaseException:
+                    pass
+
+            if self._stop.is_set():
+                break
+
+            logger.warning(
+                f"[PERSISTENT-SESSION] Session for '{self.server_name}' died, "
+                f"reconnecting in {self._reconnect_delay:.1f}s"
+            )
+            await asyncio.sleep(self._reconnect_delay)
+            self._reconnect_delay = min(self._reconnect_delay * 2, _RECONNECT_MAX_DELAY)
+
+            if self._stop.is_set():
+                break
+
+            async with self._reconnect_lock:
+                # reconnect_now() may have already recovered the session while we slept
+                if self.session is not None:
+                    self._reconnect_delay = _RECONNECT_BASE_DELAY
+                    continue
+
+                self._ready.clear()
+                self._error = None
+                self._task = asyncio.create_task(
+                    self._run(), name=f"mcp-persistent-{self.server_name}"
+                )
+                try:
+                    await asyncio.wait_for(asyncio.shield(self._ready.wait()), timeout=30)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f"[PERSISTENT-SESSION] Timed out reconnecting '{self.server_name}', will retry"
+                    )
+                    # Cancel the hung _run task before retrying
+                    self._task.cancel()
+                    try:
+                        await self._task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    continue
+
+                if self._error:
+                    logger.error(
+                        f"[PERSISTENT-SESSION] Reconnect failed for '{self.server_name}': {self._error}"
+                    )
+                else:
+                    logger.info(f"[PERSISTENT-SESSION] Reconnected '{self.server_name}'")
+                    self._reconnect_delay = _RECONNECT_BASE_DELAY
+
+    async def reconnect_now(self) -> bool:
+        """Synchronous reconnect used as fallback when session is None at call time."""
+        if self._stop.is_set():
+            return False
+        if self.session is not None:
+            return True
+        async with self._reconnect_lock:
+            # Re-check under lock: watchdog may have recovered while we waited
+            if self.session is not None:
+                return True
+            logger.info(f"[PERSISTENT-SESSION] Fallback reconnect for '{self.server_name}'")
+            # Cancel any _run task that is alive but has a broken session state
+            # (e.g. protocol error — subprocess still running but session unusable)
+            if self._task and not self._task.done():
+                self._task.cancel()
+                try:
+                    await self._task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._ready.clear()
+            self._error = None
+            self._task = asyncio.create_task(
+                self._run(), name=f"mcp-persistent-{self.server_name}"
+            )
+            try:
+                await asyncio.wait_for(asyncio.shield(self._ready.wait()), timeout=30)
+            except asyncio.TimeoutError:
+                logger.error(f"[PERSISTENT-SESSION] Fallback reconnect timed out for '{self.server_name}'")
+                self._task.cancel()
+                try:
+                    await self._task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                return False
+            if self._error:
+                logger.error(f"[PERSISTENT-SESSION] Fallback reconnect failed for '{self.server_name}': {self._error}")
+                return False
+            self._reconnect_delay = _RECONNECT_BASE_DELAY
+            return True
+
+    async def stop(self):
+        self._stop.set()
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await asyncio.wait_for(self._task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
 
 
 class MCPManager:
@@ -125,6 +326,8 @@ class MCPManager:
 
         self.client: Optional[MultiServerMCPClient] = None
         self.server_configs: Dict = {}
+        # server_name -> _PersistentSession, for servers with "persistent": true
+        self._persistent_sessions: Dict[str, _PersistentSession] = {}
 
     def load_config(self) -> Dict:
         """
@@ -226,6 +429,11 @@ class MCPManager:
             # Create MultiServerMCPClient
             self.client = MultiServerMCPClient(self.server_configs)
 
+            # Start persistent sessions for servers with "persistent": true
+            for name, server_config in raw_config.items():
+                if server_config.get("persistent") and name in self.server_configs:
+                    await self._start_persistent_session(name)
+
             logger.info(f"Successfully connected to {len(self.server_configs)} MCP services")
             return len(self.server_configs)
 
@@ -234,8 +442,8 @@ class MCPManager:
             if strict:
                 logger.error("Exiting due to invalid MCP configuration")
                 sys.exit(1)
-            self.client = None
             self.server_configs = {}
+            await self.disconnect_all()
             return 0
 
         except Exception as e:
@@ -243,9 +451,34 @@ class MCPManager:
             if strict:
                 logger.error("Exiting due to MCP connection failure")
                 sys.exit(1)
-            self.client = None
             self.server_configs = {}
+            await self.disconnect_all()
             return 0
+
+    async def _start_persistent_session(self, server_name: str) -> bool:
+        """Start (or restart) a persistent session for the given server."""
+        # Tear down existing session if any
+        existing = self._persistent_sessions.pop(server_name, None)
+        if existing:
+            await existing.stop()
+
+        connection_config = self.server_configs.get(server_name)
+        if not connection_config:
+            logger.warning(f"[PERSISTENT-SESSION] No connection config found for '{server_name}'")
+            return False
+
+        ps = _PersistentSession(server_name, connection_config)
+        ok = await ps.start()
+        if ok:
+            self._persistent_sessions[server_name] = ps
+        return ok
+
+    def get_persistent_session(self, server_name: str) -> Optional[ClientSession]:
+        """Return the live ClientSession for a persistent server, or None."""
+        ps = self._persistent_sessions.get(server_name)
+        if ps and ps.session:
+            return ps.session
+        return None
 
     async def get_all_tools(self) -> Dict[str, List[Dict]]:
         """
@@ -426,6 +659,14 @@ class MCPManager:
 
     async def disconnect_all(self):
         """Disconnect all MCP connections"""
+        # Stop all persistent sessions first
+        for name, ps in list(self._persistent_sessions.items()):
+            try:
+                await ps.stop()
+            except Exception as e:
+                logger.error(f"Failed to stop persistent session for '{name}': {e}")
+        self._persistent_sessions.clear()
+
         if self.client:
             try:
                 # MultiServerMCPClient manages connections automatically
@@ -447,6 +688,20 @@ class MCPManager:
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+    def _stop_persistent_session_sync(self, name: str) -> None:
+        """Stop a persistent session from sync context (fire-and-forget via running loop)."""
+        ps = self._persistent_sessions.pop(name, None)
+        if ps is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(ps.stop())
+        except RuntimeError:
+            # No running loop (e.g. called from a test or CLI sync context)
+            asyncio.run(ps.stop())
+        except Exception as e:
+            logger.warning(f"[PERSISTENT-SESSION] Failed to stop session for '{name}': {e}")
+
     def install_server(self, name: str, config: dict, env_defaults: Optional[Dict] = None) -> bool:
         """
         Install (add or update) an MCP server config into mcp.json.
@@ -466,18 +721,22 @@ class MCPManager:
             data = self._read_raw_config()
             existing = data.get("mcpServers", {}).get(name, {})
 
-            # Preserve existing env if already configured; only overwrite non-env parts
+            # Merge env: static keys from new config (e.g. OTEL_SDK_DISABLED) take lowest
+            # priority; user's existing credentials take highest priority.
             if existing.get("env"):
+                merged_env = dict(config.get("env", {}))
+                merged_env.update(existing["env"])
                 merged = {k: v for k, v in config.items() if k != "env"}
-                merged["env"] = existing["env"]
-                logger.info(f"[MCP-INSTALL] Preserving existing env for: {name}")
+                merged["env"] = merged_env
+                logger.info(f"[MCP-INSTALL] Merged static+user env for: {name}")
             else:
                 merged = config
 
             data.setdefault("mcpServers", {})[name] = merged
             self._write_raw_config(data)
-            # Reset client so next tool_call reconnects
+            # Reset client and stop any persistent session so next connect_all re-initialises
             self.client = None
+            self._stop_persistent_session_sync(name)
             logger.info(f"[MCP-INSTALL] Installed MCP server: {name}")
 
             # Always write example file (overwrite the corresponding entry)
@@ -548,6 +807,7 @@ class MCPManager:
                 data["mcpServers"] = servers
                 self._write_raw_config(data)
                 self.client = None
+                self._stop_persistent_session_sync(name)
                 logger.info(f"[MCP-REMOVE] Removed MCP server: {name}")
             else:
                 logger.warning(f"[MCP-REMOVE] Server not found: {name}")
