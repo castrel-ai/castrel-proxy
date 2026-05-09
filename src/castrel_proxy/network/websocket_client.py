@@ -330,15 +330,23 @@ class WebSocketClient:
             )
             if env:
                 mcp_config = dict(mcp_config)
-                mcp_config["env"] = env
+                # Merge static env from mcp_config (e.g. OTEL_SDK_DISABLED) with user env;
+                # user env takes precedence for overlapping keys.
+                merged_env = dict(mcp_config.get("env", {}))
+                merged_env.update(env)
+                mcp_config["env"] = merged_env
             elif env_defaults:
                 # No real env values but env_defaults defines what's needed
                 # Use placeholder values as template for the user to fill in
                 mcp_config = dict(mcp_config)
-                mcp_config["env"] = {
-                    key: (meta.get("placeholder", f"<{key}>") if isinstance(meta, dict) else f"<{key}>")
-                    for key, meta in env_defaults.items()
-                }
+                merged_env = dict(mcp_config.get("env", {}))
+                merged_env.update(
+                    {
+                        key: (meta.get("placeholder", f"<{key}>") if isinstance(meta, dict) else f"<{key}>")
+                        for key, meta in env_defaults.items()
+                    }
+                )
+                mcp_config["env"] = merged_env
             success = self.mcp_manager.install_server(item_id, mcp_config, env_defaults)
             if success:
                 self._schedule_capabilities_sync(reason=f"mcp_install:{item_id}")
@@ -1231,13 +1239,33 @@ class WebSocketClient:
                     },
                 }
 
-            # Use a single session for both tool verification and execution.
-            # Previously get_tools() + ainvoke() spawned TWO subprocesses per
-            # call (each creates a temporary stdio session). Heavy MCP servers
-            # like mcp-mat could fail on the second spawn with "Connection closed".
-            async with self.mcp_manager.client.session(server_name) as session:
-                # Verify the tool exists
-                tools_result = await session.list_tools()
+            # Use persistent session if available (servers with "persistent": true in mcp.json),
+            # otherwise open a short-lived session per call.
+            persistent_session = self.mcp_manager.get_persistent_session(server_name)
+            if persistent_session is None:
+                # Fallback: watchdog may not have reconnected yet — try synchronously
+                ps = self.mcp_manager._persistent_sessions.get(server_name)
+                if ps is not None:
+                    logger.info(
+                        f"[CLIENT-MCP-EXEC] Persistent session unavailable for '{server_name}', "
+                        "attempting fallback reconnect"
+                    )
+                    ok = await ps.reconnect_now()
+                    if ok:
+                        persistent_session = ps.session
+
+            if persistent_session:
+                logger.info(
+                    f"[CLIENT-MCP-EXEC] Using persistent session for '{server_name}'"
+                )
+                ps = self.mcp_manager._persistent_sessions.get(server_name)
+                try:
+                    tools_result = await persistent_session.list_tools()
+                except Exception as list_err:
+                    # session is broken — mark dead so watchdog/reconnect_now picks it up
+                    if ps:
+                        ps.session = None
+                    raise list_err
                 available_names = [t.name for t in tools_result.tools]
                 if tool_name not in available_names:
                     logger.error(
@@ -1256,9 +1284,42 @@ class WebSocketClient:
                             "error": f"Execute MCP tool失败: tool不存在, available={available_names}",
                         },
                     }
+                try:
+                    call_result = await persistent_session.call_tool(tool_name, arguments)
+                except Exception as call_err:
+                    # Mark the session dead so the watchdog triggers reconnect
+                    if ps:
+                        ps.session = None
+                    raise call_err
+            else:
+                # Use a single session for both tool verification and execution.
+                # Previously get_tools() + ainvoke() spawned TWO subprocesses per
+                # call (each creates a temporary stdio session). Heavy MCP servers
+                # like mcp-mat could fail on the second spawn with "Connection closed".
+                async with self.mcp_manager.client.session(server_name) as session:
+                    # Verify the tool exists
+                    tools_result = await session.list_tools()
+                    available_names = [t.name for t in tools_result.tools]
+                    if tool_name not in available_names:
+                        logger.error(
+                            f"[CLIENT-MCP-EXEC-ERROR] MCP tool not found: message_id={message_id}, "
+                            f"server={server_name}, tool={tool_name}, available_tools={available_names}, "
+                            f"client_id={self.client_id}"
+                        )
+                        return {
+                            "id": message_id,
+                            "type": "mcp_tool_result",
+                            "success": False,
+                            "data": {
+                                "server_name": server_name,
+                                "tool_name": tool_name,
+                                "result": None,
+                                "error": f"Execute MCP tool失败: tool不存在, available={available_names}",
+                            },
+                        }
 
-                # Execute the tool within the same session (same subprocess)
-                call_result = await session.call_tool(tool_name, arguments)
+                    # Execute the tool within the same session (same subprocess)
+                    call_result = await session.call_tool(tool_name, arguments)
 
             # Convert CallToolResult to JSON-serializable string
             result_parts = []

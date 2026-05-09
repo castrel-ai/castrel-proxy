@@ -1,0 +1,60 @@
+# Builtin MCP prewarm manifest template for bundled Docker image.
+# This template is resolved to mcp-bundle.yaml at image build time.
+bundle:
+  - name: time_mcp
+    transport: stdio
+    prewarm: npx -y @guanxiong/mcp-server-time --help >/dev/null 2>&1 || true
+  - name: filesystem_mcp
+    transport: stdio
+    prewarm: npx -y @modelcontextprotocol/server-filesystem /tmp --help >/dev/null 2>&1 || true
+  - name: fetch_mcp
+    transport: stdio
+    prewarm: npx -y mcp-fetch-server --help >/dev/null 2>&1 || true
+  - name: git_mcp
+    transport: stdio
+    prewarm: uvx mcp-server-git --help >/dev/null 2>&1 || true
+  - name: memory_mcp
+    transport: stdio
+    prewarm: npx -y @modelcontextprotocol/server-memory --help >/dev/null 2>&1 || true
+  - name: kubernetes_mcp
+    transport: stdio
+    prewarm: npx -y kubernetes-mcp-server --help >/dev/null 2>&1 || true
+  - name: grafana_mcp
+    transport: stdio
+    prewarm: uvx mcp-grafana --help >/dev/null 2>&1 || true
+  - name: sequential_thinking_mcp
+    transport: stdio
+    prewarm: npx -y @modelcontextprotocol/server-sequential-thinking --help >/dev/null 2>&1 || true
+  - name: mysql_mcp
+    transport: stdio
+    prewarm: npx -y @benborla29/mcp-server-mysql --help >/dev/null 2>&1 || true
+  - name: redis_mcp
+    transport: stdio
+    prewarm: uvx redis-mcp-server --help >/dev/null 2>&1 || true
+  - name: jvm_mat_mcp
+    transport: stdio
+    prewarm: npx -y mcp-mat --help >/dev/null 2>&1 || true
+  - name: jvm_arthas_mcp
+    transport: http
+    prewarm: true
+  - name: kafka_mcp
+    transport: stdio
+    prewarm: kafka-mcp-server --help >/dev/null 2>&1 || true
+  - name: rabbitmq_mcp
+    transport: stdio
+    prewarm: uvx amq-mcp-server-rabbitmq --help >/dev/null 2>&1 || true
+  - name: mongodb_mcp
+    transport: stdio
+    prewarm: npx -y mongodb-mcp-server --help >/dev/null 2>&1 || true
+  - name: postgresql_mcp
+    transport: stdio
+    prewarm: uvx mcp-postgresql-ops --help >/dev/null 2>&1 || true
+  - name: elasticsearch_mcp
+    transport: stdio
+    prewarm: npx -y @elastic/mcp-server-elasticsearch --help >/dev/null 2>&1 || true
+  - name: dbhub_mcp
+    transport: stdio
+    prewarm: npx -y @bytebase/dbhub --help >/dev/null 2>&1 || true
+  - name: docker_mcp
+    transport: stdio
+    prewarm: npx -y mcp-server-docker --help >/dev/null 2>&1 || true

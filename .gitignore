@@ -142,3 +142,7 @@ mcp.json
 
 # Logs
 *.log
+
+# Build-time generated MCP bundle artifacts
+mcp-bundle.yaml
+mcp-bundle.lock.yaml
