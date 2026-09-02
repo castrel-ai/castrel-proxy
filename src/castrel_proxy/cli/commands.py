@@ -22,6 +22,7 @@ from ..mcp.manager import get_mcp_manager
 from ..network.api_client import APIError, NetworkError, PairingError, get_api_client
 from ..network.websocket_client import WebSocketClient
 from .skill_commands import skill_app
+
 # from ..security.whitelist import init_whitelist_file  # DISABLED: Whitelist mechanism disabled
 
 # Configure logging
@@ -591,9 +592,10 @@ def mcp_sync():
             raw_configs = mcp_manager.get_raw_configs()
 
             if not raw_configs:
-                typer.secho("✗ No MCP services configured", fg=typer.colors.YELLOW)
+                typer.secho("⚠ No MCP services configured, sending empty tool list", fg=typer.colors.YELLOW)
                 typer.echo(f"Config file: {mcp_manager.config_file}")
-                typer.echo("Hint: Use 'castrel-proxy mcp-list' to view configuration")
+                await api_client._send_client_info(server_url, client_id, verification_code, workspace_id, {})
+                typer.secho("✓ MCP tool schemas synchronized (empty)", fg=typer.colors.GREEN)
                 return
 
             typer.secho(f"✓ Discovered {len(raw_configs)} MCP server(s)", fg=typer.colors.GREEN)
@@ -714,8 +716,8 @@ def version():
     """
     Show version information
     """
-    from .. import __version__, __author__
-    typer.secho(f"castrel-proxy", bold=True, nl=False)
+    from .. import __author__, __version__
+    typer.secho("castrel-proxy", bold=True, nl=False)
     typer.echo(f" v{__version__}")
     typer.echo(f"Author: {__author__}")
 
@@ -772,7 +774,7 @@ def uninstall(
     if config_obj.exists():
         try:
             config_obj.delete()
-            typer.secho(f"✓ Removed config file", fg=typer.colors.GREEN)
+            typer.secho("✓ Removed config file", fg=typer.colors.GREEN)
         except ConfigError as e:
             typer.secho(f"⚠ {e}", fg=typer.colors.YELLOW)
     else:
@@ -811,7 +813,7 @@ def uninstall(
 
 def run():
     """Entry point for the CLI application"""
-    # 如果没有任何参数（只有程序名），则添加 --help 参数
+    # If no arguments were given (only the program name), add --help
     if len(sys.argv) == 1:
         sys.argv.append("--help")
     app()

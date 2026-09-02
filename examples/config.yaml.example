@@ -9,3 +9,29 @@ verification_code: "eyJ0cyI6MTczNTA4ODQwMCwid2lkIjoiZGVmYXVsdCIsInJhbmQiOiIxMjM0
 client_id: "a1b2c3d4e5f6g7h8"
 workspace_id: "default"
 paired_at: "2025-01-26T10:30:00Z"
+
+# User-authored skills are mounted read-only into each sandbox container.
+skills:
+  directory: ~/.castrel/skills
+
+# ---------------------------------------------------------------------------
+# Sandbox (isolated container execution) — optional
+# ---------------------------------------------------------------------------
+# When Docker is available, the proxy exposes a second, isolated execution
+# channel alongside the host bash channel.  Any Docker-compatible socket
+# provider works: Docker Engine (Linux), OrbStack, Colima, Rancher Desktop, etc.
+# Docker Desktop is NOT required.  All fields below are optional and shown
+# with their defaults.
+sandbox:
+  enabled: true              # master switch; false disables sandbox entirely
+  image: castrelai/castrel-sandbox:latest
+  workspace_root: ~/.castrel/sandbox   # per-session workspaces live here
+  network: none              # none | bridge  (none = no network for untrusted code)
+  idle_timeout: 1800         # seconds; reap containers idle longer than this
+  reaper_interval: 60        # seconds; idle reaper scan interval
+  max_concurrent: 4          # max simultaneous per-session containers
+  exec_timeout: 300          # default per-execution timeout (seconds)
+  resources:
+    cpus: "2"                # CPU quota (docker --cpus)
+    memory: 2g               # memory limit (docker --memory)
+    pids_limit: 512          # max processes (docker --pids-limit)

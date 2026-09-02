@@ -62,7 +62,57 @@ Configure MCP (Model Context Protocol) services. This is optional.
 
 See `examples/mcp.json.example` for more examples.
 
-### 3. Command Whitelist
+### 3. Sandbox Configuration
+
+Sandbox settings are stored in `~/.castrel/config.yaml`:
+
+```yaml
+skills:
+  directory: ~/.castrel/skills
+sandbox:
+  enabled: true
+  image: castrelai/castrel-sandbox:latest
+  workspace_root: ~/.castrel/sandbox
+  network: none
+  idle_timeout: 1800
+  reaper_interval: 60
+  max_concurrent: 4
+  exec_timeout: 300
+  resources:
+    cpus: "2"
+    memory: 2g
+    pids_limit: 512
+```
+
+The proxy starts an idle reaper when the sandbox subsystem is initialized.
+After `idle_timeout` seconds without a sandbox operation, the reaper invokes
+the configured backend removal method. Running executions are protected from
+reaping. Stopping the proxy cancels the reaper and removes all managed
+containers.
+
+The `skills.directory` path contains user-authored skills. It is created when
+the first sandbox session starts and mounted read-only at
+`/opt/castrel/skills/user`. Built-in skills are shipped in the sandbox image
+and are available at `/opt/castrel/skills/builtin`. The agent must read skill
+files through the sandbox execution tool; sandbox files are not visible to the
+agent automatically.
+
+The dependency-complete base image provides the script runtimes and shared
+Python packages used by the sandbox. `python-pptx` and LibreOffice are
+intentionally not required because the agent produces editable Slide IR JSON
+rather than binary presentation files.
+
+Build a skill overlay from the dependency-complete base image:
+
+```bash
+docker build \
+  -f Dockerfile.sandbox \
+  -t castrelai/castrel-sandbox:latest .
+
+docker push castrelai/castrel-sandbox:latest
+```
+
+### 4. Command Whitelist
 
 **Location**: `~/.castrel/whitelist.conf`
 

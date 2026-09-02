@@ -29,3 +29,4 @@ def test_get_machine_metadata():
     # Should have OS information
     assert "os" in metadata
     assert metadata["os"] in ["Windows", "Linux", "Darwin"]
+    assert metadata["bridge_native_directory_requests"] == "true"

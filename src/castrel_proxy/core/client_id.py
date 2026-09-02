@@ -91,4 +91,6 @@ def get_machine_metadata() -> Dict[str, str]:
     except Exception:
         pass
 
+    metadata["bridge_native_directory_requests"] = "true"
+
     return metadata

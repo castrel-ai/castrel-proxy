@@ -4,44 +4,63 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Keep in sync with the ARG default in Dockerfile.sandbox.
+DEFAULT_BASE_IMAGE="sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.1.0"
+
 VERSION=""
 HUB=""
-IMAGE_NAME="castrel-proxy"
+IMAGE_NAME="castrel-sandbox"
 PLATFORMS="linux/amd64,linux/arm64"
-DOCKERFILE="Dockerfile.bundled"
-STRICT_LATEST="1"
+DOCKERFILE="Dockerfile.sandbox"
+BASE_IMAGE="${DEFAULT_BASE_IMAGE}"
 PUSH_LATEST="1"
 LATEST_ONLY="0"
 LOAD="0"
 
 usage() {
-  cat <<'EOF'
-Build and push multi-arch bundled image with Docker Buildx.
+  cat <<EOF
+Build and push the multi-arch sandbox image with Docker Buildx.
+
+The sandbox image overlays the built-in skills on top of a dependency-complete
+base image (see Dockerfile.sandbox). It is a separate image from the proxy.
 
 Required:
-  --hub <hub>           Docker Hub namespace/repository prefix, e.g. castrelai
+  --hub <hub>           Docker Hub namespace/repository prefix, e.g. castrelai.
+                        Required for push mode; optional with --load 1 (when
+                        omitted, a bare local tag like castrel-sandbox:<v> is
+                        produced to match a bare sandbox.image in config.yaml).
 
 Optional:
-  --version <v>         Image version tag, e.g. 0.1.11
-  --image <name>        Image name (default: castrel-proxy)
+  --version <v>         Image version tag, e.g. 0.0.1
+  --image <name>        Image name (default: castrel-sandbox)
   --platforms <list>    Buildx platforms (default: linux/amd64,linux/arm64)
-  --dockerfile <path>   Dockerfile path relative to open-castrel-proxy (default: Dockerfile.bundled)
-  --strict-latest <0|1> Pass build arg MCP_BUNDLE_STRICT_LATEST (default: 1)
+  --dockerfile <path>   Dockerfile path relative to open-castrel-proxy (default: Dockerfile.sandbox)
+  --base-image <ref>    Base image passed as build arg BASE_IMAGE
+                        (default: ${DEFAULT_BASE_IMAGE})
   --push-latest <0|1>   Also push :latest tag (default: 1)
   --latest-only <0|1>   Only push :latest tag (default: 0)
   --load <0|1>          Local mode: build single-arch and load into the local
                         docker image store instead of pushing (default: 0).
-                        Forces a single host platform; --version optional.
+                        Forces a single host platform; --version optional;
+                        --hub optional (produces a bare local tag).
   -h, --help            Show this help
 
+Note:
+  The base image must provide manifests for every target platform. If the base
+  image is single-arch, narrow --platforms accordingly (e.g. linux/amd64).
+
 Examples:
-  # Local verify (no push): builds castrelai/castrel-proxy:latest into local docker
-  ./scripts/build_and_push_bundled.sh --hub castrelai --load 1
+  # Local verify, bare tag matching a bare sandbox.image in ~/.castrel/config.yaml
+  ./scripts/build_and_push_sandbox.sh --load 1 --version 0.0.1
+  # -> loads castrel-sandbox:0.0.1 and castrel-sandbox:latest into local docker
+
+  # Local verify with hub namespace (config.yaml uses castrelai/castrel-sandbox:latest)
+  ./scripts/build_and_push_sandbox.sh --hub castrelai --load 1
 
   # Publish after local verify passes
-  ./scripts/build_and_push_bundled.sh --version 0.1.11 --hub castrelai
-  ./scripts/build_and_push_bundled.sh --version 0.1.11 --hub myorg --push-latest 0
-  ./scripts/build_and_push_bundled.sh --hub castrelai --latest-only 1
+  ./scripts/build_and_push_sandbox.sh --hub castrelai --latest-only 1
+  ./scripts/build_and_push_sandbox.sh --version 0.0.1 --hub castrelai
+  ./scripts/build_and_push_sandbox.sh --hub castrelai --platforms linux/amd64
 EOF
 }
 
@@ -67,8 +86,8 @@ while [[ $# -gt 0 ]]; do
       DOCKERFILE="${2:-}"
       shift 2
       ;;
-    --strict-latest)
-      STRICT_LATEST="${2:-}"
+    --base-image)
+      BASE_IMAGE="${2:-}"
       shift 2
       ;;
     --push-latest)
@@ -95,14 +114,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${HUB}" ]]; then
-  echo "Error: --hub is required." >&2
+if [[ -z "${HUB}" && "${LOAD}" != "1" ]]; then
+  echo "Error: --hub is required unless --load=1." >&2
   usage
   exit 2
 fi
 
-if [[ "${STRICT_LATEST}" != "0" && "${STRICT_LATEST}" != "1" ]]; then
-  echo "Error: --strict-latest must be 0 or 1." >&2
+if [[ -z "${BASE_IMAGE}" ]]; then
+  echo "Error: --base-image must not be empty." >&2
   exit 2
 fi
 
@@ -135,7 +154,12 @@ if [[ "${LOAD}" == "0" && "${LATEST_ONLY}" == "0" && -z "${VERSION}" ]]; then
   exit 2
 fi
 
-IMAGE_BASE="${HUB}/${IMAGE_NAME}"
+if [[ -n "${HUB}" ]]; then
+  IMAGE_BASE="${HUB}/${IMAGE_NAME}"
+else
+  # Bare local tag (load mode only), matches a bare sandbox.image in config.yaml.
+  IMAGE_BASE="${IMAGE_NAME}"
+fi
 LATEST_TAG="${IMAGE_BASE}:latest"
 DOCKERFILE_PATH="${PROJECT_ROOT}/${DOCKERFILE}"
 
@@ -202,13 +226,13 @@ if [[ "${PUSH_LATEST}" == "1" ]]; then
 fi
 echo "Platforms: ${PLATFORMS}"
 echo "Dockerfile: ${DOCKERFILE_PATH}"
-echo "MCP_BUNDLE_STRICT_LATEST=${STRICT_LATEST}"
+echo "BASE_IMAGE=${BASE_IMAGE}"
 echo "Output: ${OUTPUT_FLAG}"
 
 docker buildx build \
   --platform "${PLATFORMS}" \
   --file "${DOCKERFILE_PATH}" \
-  --build-arg "MCP_BUNDLE_STRICT_LATEST=${STRICT_LATEST}" \
+  --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
   "${TAGS[@]}" \
   "${OUTPUT_FLAG}" \
   "${PROJECT_ROOT}"

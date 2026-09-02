@@ -132,6 +132,7 @@ def info(
     # Try to display rich frontmatter metadata using Pydantic models
     try:
         import yaml
+
         from ..skills.models import SkillFrontmatter
 
         skill_dir = Path(skill.skill_dir)
