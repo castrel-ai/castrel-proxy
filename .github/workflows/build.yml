@@ -32,7 +32,10 @@ jobs:
         run: |
           chmod +x ./dist/castrel-proxy
           ./dist/castrel-proxy --help
-          ./dist/castrel-proxy version
+          EXPECTED_VERSION=$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)
+          VERSION_OUTPUT=$(./dist/castrel-proxy version)
+          echo "${VERSION_OUTPUT}"
+          echo "${VERSION_OUTPUT}" | grep -F "v${EXPECTED_VERSION}" >/dev/null
           ./dist/castrel-proxy uninstall --yes
 
       - name: Upload artifact
@@ -62,7 +65,10 @@ jobs:
         run: |
           chmod +x ./dist/castrel-proxy
           ./dist/castrel-proxy --help
-          ./dist/castrel-proxy version
+          EXPECTED_VERSION=$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)
+          VERSION_OUTPUT=$(./dist/castrel-proxy version)
+          echo "${VERSION_OUTPUT}"
+          echo "${VERSION_OUTPUT}" | grep -F "v${EXPECTED_VERSION}" >/dev/null
           ./dist/castrel-proxy uninstall --yes
 
       - name: Upload artifact
@@ -142,6 +148,7 @@ jobs:
             --hidden-import file_read_backwards \
             --hidden-import certifi \
             --collect-all castrel_proxy \
+            --copy-metadata castrel-proxy \
             --collect-data certifi \
             --console \
             entry_point.py
@@ -151,7 +158,10 @@ jobs:
         run: |
           chmod +x ./dist/${{ matrix.binary_name }}
           ./dist/${{ matrix.binary_name }} --help
-          ./dist/${{ matrix.binary_name }} version
+          EXPECTED_VERSION=$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)
+          VERSION_OUTPUT=$(./dist/${{ matrix.binary_name }} version)
+          echo "${VERSION_OUTPUT}"
+          echo "${VERSION_OUTPUT}" | grep -F "v${EXPECTED_VERSION}" >/dev/null
           ./dist/${{ matrix.binary_name }} uninstall --yes
 
       - name: Upload artifact

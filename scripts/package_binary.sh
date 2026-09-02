@@ -272,6 +272,7 @@ PY
         --hidden-import file_read_backwards \
         --hidden-import certifi \
         --collect-all castrel_proxy \
+        --copy-metadata castrel-proxy \
         --collect-data certifi \
         --console \
         /work/entry_point.py
