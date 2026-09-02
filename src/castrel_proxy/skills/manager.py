@@ -14,7 +14,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .models import SkillSyncEntry, SkillSyncManifest
 
@@ -90,7 +90,7 @@ class SkillsManager:
         if skills_dir is None:
             self.skills_dir = Path.home() / ".castrel" / "skills"
         else:
-            self.skills_dir = Path(skills_dir)
+            self.skills_dir = Path(skills_dir).expanduser()
 
     def scan_skills(self) -> Dict[str, Dict]:
         """
@@ -354,7 +354,7 @@ class SkillsManager:
         Raises:
             SkillError: Validation failure or directory already exists
         """
-        from .models import SKILL_NAME_PATTERN, SKILL_NAME_MAX_LENGTH
+        from .models import SKILL_NAME_MAX_LENGTH, SKILL_NAME_PATTERN
 
         if not SKILL_NAME_PATTERN.match(name):
             raise SkillError(f"Skill name must be lowercase-hyphen-case: '{name}'")
@@ -426,7 +426,8 @@ class SkillsManager:
         Raises:
             SkillError: Validation failure
         """
-        from .validator import EXCLUDED_DIRS, full_security_check, validate_skill as _validate_skill
+        from .validator import EXCLUDED_DIRS, full_security_check
+        from .validator import validate_skill as _validate_skill
 
         skill_dir = self._get_skill_dir(name)
         if not skill_dir.exists():
@@ -553,9 +554,22 @@ class SkillsManager:
             logger.warning("Import content has warnings: %s", "; ".join(warnings))
 
 
-_skills_manager = SkillsManager()
+_skills_manager: Optional[SkillsManager] = None
 
 
 def get_skills_manager() -> SkillsManager:
-    """Get global SkillsManager instance"""
+    """Get a global SkillsManager using the configured host skills directory."""
+    global _skills_manager
+    configured_dir: Optional[Path] = None
+    try:
+        from ..core.config import ConfigError, get_config
+
+        configured_dir = get_config().get_skills_directory()
+    except ConfigError:
+        configured_dir = None
+
+    if _skills_manager is None or (
+        configured_dir is not None and _skills_manager.skills_dir != configured_dir
+    ):
+        _skills_manager = SkillsManager(configured_dir)
     return _skills_manager

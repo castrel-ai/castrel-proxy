@@ -7,12 +7,9 @@ Environment isolation:
 - No real external connections during tests
 """
 import os
-import tempfile
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-
 
 # ============================================================
 # Environment Isolation

@@ -22,7 +22,12 @@ logger = logging.getLogger(__name__)
 def _build_runtime_cache_env() -> Dict[str, str]:
     """Collect runtime cache env that should be preserved for stdio MCP processes."""
     cache_env: Dict[str, str] = {}
-    for key in ("UV_CACHE_DIR", "npm_config_cache", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR"):
+    for key in (
+        "UV_CACHE_DIR", "npm_config_cache", "NPM_CONFIG_CACHE", "PIP_CACHE_DIR",
+        # OTEL_SDK_DISABLED prevents @elastic/opentelemetry-node from writing to stdout
+        # and corrupting the MCP stdio transport. Set to "true" in the bundled Docker image.
+        "OTEL_SDK_DISABLED",
+    ):
         value = os.environ.get(key)
         if value:
             cache_env[key] = value
