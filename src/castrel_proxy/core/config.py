@@ -4,11 +4,15 @@ Configuration File Management Module
 Handles reading, writing, and validating the ~/.castrel/config.yaml configuration file
 """
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import yaml
+
+if TYPE_CHECKING:
+    from ..sandbox.config import SandboxConfig
 
 
 class ConfigError(Exception):
@@ -30,6 +34,25 @@ class Config:
         if isinstance(value, (int, float)):
             return bool(value)
         return False
+
+    @staticmethod
+    def _coerce_string_list(value: object) -> list[str]:
+        """Normalize loose config values into a list of non-empty strings."""
+        if isinstance(value, str):
+            candidates = value.split(os.pathsep)
+        elif isinstance(value, (list, tuple, set)):
+            candidates = list(value)
+        else:
+            return []
+
+        normalized: list[str] = []
+        for item in candidates:
+            if not isinstance(item, str):
+                continue
+            stripped = item.strip()
+            if stripped:
+                normalized.append(stripped)
+        return normalized
 
     def __init__(self, config_dir: Optional[Path] = None):
         """
@@ -68,7 +91,7 @@ class Config:
         self._ensure_config_dir()
 
         # Load existing config to preserve openclaw settings
-        existing_config = {}
+        existing_config: Dict[str, Any] = {}
         if self.config_file.exists():
             try:
                 with open(self.config_file, "r", encoding="utf-8") as f:
@@ -77,7 +100,7 @@ class Config:
                 # If loading fails, start with empty dict
                 existing_config = {}
 
-        config_data = {
+        config_data: Dict[str, Any] = {
             "server_url": server_url,
             "verification_code": verification_code,
             "client_id": client_id,
@@ -86,6 +109,11 @@ class Config:
         }
 
         config_data["yolo"] = self._coerce_bool(existing_config.get("yolo", False))
+
+        for section_name in ("skills", "sandbox"):
+            section = existing_config.get(section_name)
+            if isinstance(section, dict):
+                config_data[section_name] = section
 
         # Preserve or initialize openclaw configuration
         # If exists in existing config, preserve it; otherwise use default values from getters
@@ -296,8 +324,89 @@ class Config:
         except ConfigError:
             return []
 
+    def get_filesystem_roots(self) -> list[str]:
+        """Get explicit filesystem roots for bridge-native directory browsing."""
+        env_value = os.environ.get("CASTREL_FILESYSTEM_ROOTS")
+        if env_value:
+            return self._coerce_string_list(env_value)
 
-# Global configuration instance
+        try:
+            config = self.load()
+        except ConfigError:
+            return []
+
+        filesystem_config = config.get("filesystem")
+        if isinstance(filesystem_config, dict):
+            roots = self._coerce_string_list(filesystem_config.get("roots", []))
+            if roots:
+                return roots
+
+        return self._coerce_string_list(config.get("filesystem_roots", []))
+
+    def get_skills_directory(self) -> Path:
+        """Return the host directory containing user-authored skills."""
+        default_path = Path.home() / ".castrel" / "skills"
+        env_value = os.environ.get("CASTREL_SKILLS_DIR")
+        if env_value and env_value.strip():
+            return Path(env_value.strip()).expanduser()
+
+        try:
+            config = self.load()
+        except ConfigError:
+            return default_path
+
+        skills_config = config.get("skills")
+        if isinstance(skills_config, dict):
+            configured_path = skills_config.get("directory")
+            if isinstance(configured_path, str) and configured_path.strip():
+                return Path(configured_path.strip()).expanduser()
+
+        configured_path = config.get("skills_dir")
+        if isinstance(configured_path, str) and configured_path.strip():
+            return Path(configured_path.strip()).expanduser()
+        return default_path
+
+    def get_sandbox_config(self) -> "SandboxConfig":
+        """Get resolved sandbox configuration (from the ``sandbox`` section).
+
+        Falls back to defaults when the config file is missing or has no
+        ``sandbox`` section, so the sandbox subsystem is usable out-of-the-box.
+
+        Environment variables take precedence over the config file so a
+        containerized proxy (Docker install) can enable the sandbox and point
+        the workspace at a host-shared bind mount without editing config.yaml:
+          - ``CASTREL_SANDBOX_ENABLED``       (bool)
+          - ``CASTREL_SANDBOX_IMAGE``         (str)
+          - ``CASTREL_SANDBOX_WORKSPACE_ROOT``(str)
+        """
+        from ..sandbox.config import SandboxConfig
+
+        try:
+            config = self.load()
+        except ConfigError:
+            config = {}
+
+        section = config.get("sandbox")
+        sandbox_config = SandboxConfig.from_dict(
+            section if isinstance(section, dict) else None,
+            user_skills_dir=str(self.get_skills_directory()),
+        )
+
+        enabled_env = os.environ.get("CASTREL_SANDBOX_ENABLED")
+        if enabled_env and enabled_env.strip():
+            sandbox_config.enabled = self._coerce_bool(enabled_env)
+
+        image_env = os.environ.get("CASTREL_SANDBOX_IMAGE")
+        if image_env and image_env.strip():
+            sandbox_config.image = image_env.strip()
+
+        workspace_env = os.environ.get("CASTREL_SANDBOX_WORKSPACE_ROOT")
+        if workspace_env and workspace_env.strip():
+            sandbox_config.workspace_root = workspace_env.strip()
+
+        return sandbox_config
+
+
 _config = Config()
 
 

@@ -1,0 +1,25 @@
+# Pass the dependency-complete sandbox image supplied by the deployment.
+ARG BASE_IMAGE=sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.1.0
+FROM ${BASE_IMAGE}
+
+ENV CASTREL_BUILTIN_SKILLS_DIR=/opt/castrel/skills/builtin \
+    HOME=/home/castrel \
+    USER=castrel
+
+COPY builtin-skills /opt/castrel/skills/builtin
+
+# The base image provides ubuntu with uid/gid 1000. Rename it so sandbox files
+# are owned by the same unprivileged identity used by the proxy container.
+RUN groupmod --new-name castrel ubuntu && \
+    usermod --login castrel --home /home/castrel --move-home ubuntu && \
+    usermod --groups '' castrel && \
+    mkdir -p /workspace && \
+    chown castrel:castrel /workspace
+
+USER castrel
+WORKDIR /workspace
+
+# ProxySandboxManager executes scripts with docker exec and does not use the
+# base image's root-only Jupyter bootstrap entrypoint.
+ENTRYPOINT []
+CMD ["sleep", "infinity"]

@@ -5,12 +5,13 @@ Establishes WebSocket connection with server, receives commands and returns exec
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import time
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 import aiohttp
 
@@ -19,7 +20,7 @@ from ..core.executor import CommandExecutor
 from ..core.interactive_executor import get_interactive_executor
 from ..core.openclaw import OpenClawChecker
 from ..mcp.manager import get_mcp_manager
-from ..operations import document
+from ..operations import document, list_allowed_directories, list_directory, search_directories
 from ..security.whitelist import is_command_allowed
 from ..skills.sync import SkillSyncManager
 
@@ -39,7 +40,7 @@ class WebSocketClient:
             reconnect_interval: float = 5.0,
     ):
         """
-        初始化 WebSocket client
+        Initialize WebSocket client
 
         Args:
             server_url: Server URL
@@ -67,6 +68,7 @@ class WebSocketClient:
         self.openclaw_check_task: Optional[asyncio.Task] = None
         self.openclaw_check_interval = 60.0  # OpenClaw check interval (seconds)
         self.last_openclaw_status = None  # Track last status to avoid duplicate notifications
+        self.server_policy: Optional[dict] = None  # Server-side policy pushed via policy_sync
 
     def _get_ws_url(self) -> str:
         """Get WebSocket URL"""
@@ -82,11 +84,11 @@ class WebSocketClient:
             session_id: str,
             operation_type: str,
             operation: str,
-            arguments: any = None,
-            result: any = None,
+            arguments: Any = None,
+            result: Any = None,
             success: bool = True,
             elapsed: float = 0.0,
-            error: str = None,
+            error: Optional[str] = None,
     ):
         """
         Log operation to terminal.log
@@ -151,7 +153,8 @@ class WebSocketClient:
         Returns:
             Optional[dict]: Response message, return None if no response needed None
         """
-        message_id = message.get("id")
+        raw_message_id = message.get("id")
+        message_id = str(raw_message_id) if raw_message_id is not None else ""
         message_type = message.get("type")
         timestamp = message.get("timestamp")
 
@@ -180,7 +183,7 @@ class WebSocketClient:
             cwd = data.get("cwd")
             timeout = data.get("timeout", 300)
             session_id = data.get("session_id", "")
-            policy = data.get("policy")  # 随命令下发的策略（如有则优先使用）
+            policy = data.get("policy")  # Policy sent along with the command (used if present, takes priority)
 
             logger.info(
                 f"[CLIENT-LOCAL-CALL] Local tool call received: message_id={message_id}, "
@@ -285,6 +288,68 @@ class WebSocketClient:
                 new_content=new_content,
                 old_content=old_content,
                 encoding=encoding,
+            )
+
+        elif message_type == "directory_list_call":
+            data = message.get("data", {})
+            path = data.get("path")
+            session_id = data.get("session_id", "")
+            limit = data.get("limit", 20)
+
+            logger.info(
+                f"[CLIENT-DIR-LIST-CALL] Directory list call received: message_id={message_id}, "
+                f"path={path}, session_id={session_id}, limit={limit}, client_id={self.client_id}"
+            )
+
+            fs_policy = (self.server_policy or {}).get("filesystem", {})
+            if not fs_policy.get("read_enabled", True):
+                return {
+                    "id": message_id,
+                    "type": "directory_list_result",
+                    "success": False,
+                    "data": {
+                        "path": path,
+                        "directories": [],
+                        "error": "Directory read is disabled by workspace policy.",
+                    },
+                }
+
+            return await self._execute_directory_list(
+                message_id=message_id,
+                session_id=session_id,
+                path=path,
+                limit=limit,
+            )
+
+        elif message_type == "directory_search_call":
+            data = message.get("data", {})
+            keyword = data.get("keyword", "")
+            session_id = data.get("session_id", "")
+            limit = data.get("limit", 20)
+
+            logger.info(
+                f"[CLIENT-DIR-SEARCH-CALL] Directory search call received: message_id={message_id}, "
+                f"keyword={keyword}, session_id={session_id}, limit={limit}, client_id={self.client_id}"
+            )
+
+            fs_policy = (self.server_policy or {}).get("filesystem", {})
+            if not fs_policy.get("read_enabled", True):
+                return {
+                    "id": message_id,
+                    "type": "directory_search_result",
+                    "success": False,
+                    "data": {
+                        "keyword": keyword,
+                        "directories": [],
+                        "error": "Directory read is disabled by workspace policy.",
+                    },
+                }
+
+            return await self._execute_directory_search(
+                message_id=message_id,
+                session_id=session_id,
+                keyword=keyword,
+                limit=limit,
             )
 
         elif message_type == "local_interactive_call":
@@ -466,6 +531,53 @@ class WebSocketClient:
                 timeout=timeout,
             )
 
+        elif message_type == "sandbox_bootstrap":
+            # Create (or reuse) the per-session sandbox container
+            data = message.get("data", {})
+            session_id = data.get("session_id", "")
+            logger.info(
+                f"[CLIENT-SANDBOX-BOOTSTRAP] Sandbox bootstrap received: message_id={message_id}, "
+                f"session_id={session_id}, client_id={self.client_id}"
+            )
+            return await self._execute_sandbox_bootstrap(
+                message_id=message_id,
+                session_id=session_id,
+                image=data.get("image"),
+                network=data.get("network"),
+            )
+
+        elif message_type == "sandbox_execute_script":
+            # Execute an execute-class script inside the session sandbox
+            data = message.get("data", {})
+            session_id = data.get("session_id", "")
+            logger.info(
+                f"[CLIENT-SANDBOX-EXECUTE] Sandbox execute received: message_id={message_id}, "
+                f"session_id={session_id}, language={data.get('language')}, client_id={self.client_id}"
+            )
+            return await self._execute_sandbox_script(
+                message_id=message_id,
+                session_id=session_id,
+                language=data.get("language", ""),
+                content=data.get("content"),
+                path=data.get("path"),
+                mode=data.get("mode", "untrusted"),
+                timeout=data.get("timeout"),
+            )
+
+        elif message_type == "sandbox_read_file":
+            # Backend requests proxy to read a sandbox workspace file and return its content
+            data = message.get("data", {})
+            session_id = data.get("session_id", "")
+            logger.info(
+                f"[CLIENT-SANDBOX-READ-FILE] Received: message_id={message_id}, "
+                f"session_id={session_id}, path={data.get('path')}, client_id={self.client_id}"
+            )
+            return await self._execute_sandbox_read_file(
+                message_id=message_id,
+                session_id=session_id,
+                path=data.get("path", ""),
+            )
+
         elif message_type == "ping":
             # Heartbeat from server, response needed
             logger.debug(f"[CLIENT-PING-RECV] Received ping: message_id={message_id}, client_id={self.client_id}")
@@ -597,12 +709,12 @@ class WebSocketClient:
         Execute skill read
 
         Args:
-            message_id: 消息ID
-            skill_name: Skill 名称
-            session_id: 聊天Session ID
+            message_id: Message ID
+            skill_name: Skill name
+            session_id: Chat session ID
 
         Returns:
-            dict: 响应消息，包含 SKILL.md 内容和元数据
+            dict: Response message, includes SKILL.md content and metadata
         """
         start_time = time.time()
         try:
@@ -742,6 +854,20 @@ class WebSocketClient:
                 )
 
             message = self.skill_sync.build_capabilities_sync_message(mcp_tools)
+
+            # Attach sandbox capability so the backend knows whether this node
+            # can offer isolated (container) execution.
+            try:
+                from ..sandbox import detect
+
+                sandbox_config = get_config().get_sandbox_config()
+                message["data"]["sandbox"] = detect(sandbox_config).to_dict()
+            except Exception as e:
+                logger.warning(
+                    f"[CLIENT-CAP-SYNC-SANDBOX-WARN] Failed to build sandbox capability: "
+                    f"reason={reason}, error={e}, client_id={self.client_id}"
+                )
+
             await self.ws.send_json(message)
 
             skills_count = len(message.get("data", {}).get("skills", {}))
@@ -902,7 +1028,7 @@ class WebSocketClient:
     async def _perform_openclaw_check(self) -> dict:
         """
         Perform OpenClaw check
-        
+
         Returns:
             dict: OpenClaw status with the following structure:
                 {
@@ -961,7 +1087,7 @@ class WebSocketClient:
     async def _send_openclaw_notification(self, status: dict):
         """
         Send OpenClaw status notification message
-        
+
         Args:
             status: OpenClaw status dictionary with structure:
                 {
@@ -1012,6 +1138,174 @@ class WebSocketClient:
                 exc_info=True
             )
 
+    async def _execute_sandbox_bootstrap(
+        self,
+        message_id: str,
+        session_id: str,
+        image: Optional[str] = None,
+        network: Optional[str] = None,
+    ) -> dict:
+        """Create (or reuse) the per-session sandbox container."""
+        start_time = time.time()
+        try:
+            if not session_id:
+                raise ValueError("session_id is required for sandbox bootstrap")
+
+            from ..sandbox import get_sandbox_manager
+
+            manager = get_sandbox_manager()
+            result = await manager.bootstrap(session_id, image=image, network=network)
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[CLIENT-SANDBOX-BOOTSTRAP-SUCCESS] Sandbox ready: message_id={message_id}, "
+                f"session_id={session_id}, container={result.container_id[:12]}, reused={result.reused}, "
+                f"elapsed={elapsed:.2f}s, client_id={self.client_id}"
+            )
+            return {
+                "id": message_id,
+                "type": "sandbox_bootstrap_result",
+                "success": True,
+                "data": result.to_dict(),
+            }
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-SANDBOX-BOOTSTRAP-ERROR] Sandbox bootstrap failed: message_id={message_id}, "
+                f"session_id={session_id}, error={e}, elapsed={elapsed:.2f}s, client_id={self.client_id}",
+                exc_info=True,
+            )
+            return {
+                "id": message_id,
+                "type": "sandbox_bootstrap_result",
+                "success": False,
+                "data": {"session_id": session_id, "error": str(e)},
+            }
+
+    async def _execute_sandbox_script(
+        self,
+        message_id: str,
+        session_id: str,
+        language: str,
+        content: Optional[str] = None,
+        path: Optional[str] = None,
+        mode: str = "untrusted",
+        timeout: Optional[float] = None,
+    ) -> dict:
+        """Execute an execute-class script inside the session sandbox."""
+        start_time = time.time()
+        try:
+            if not session_id:
+                raise ValueError("session_id is required for sandbox execute")
+
+            from ..sandbox import get_sandbox_manager
+
+            manager = get_sandbox_manager()
+            result = await manager.execute_script(
+                session_id,
+                language=language,
+                content=content,
+                path=path,
+                mode=mode,
+                timeout=timeout,
+            )
+            elapsed = time.time() - start_time
+            logger.info(
+                f"[CLIENT-SANDBOX-EXECUTE-SUCCESS] Sandbox execute done: message_id={message_id}, "
+                f"session_id={session_id}, exit_code={result.exit_code}, elapsed={elapsed:.2f}s, "
+                f"artifacts={len(result.artifacts)}, client_id={self.client_id}"
+            )
+            return {
+                "id": message_id,
+                "type": "sandbox_execute_result",
+                "success": result.exit_code == 0 and result.error is None,
+                "data": result.to_dict(),
+            }
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-SANDBOX-EXECUTE-ERROR] Sandbox execute failed: message_id={message_id}, "
+                f"session_id={session_id}, error={e}, elapsed={elapsed:.2f}s, client_id={self.client_id}",
+                exc_info=True,
+            )
+            return {
+                "id": message_id,
+                "type": "sandbox_execute_result",
+                "success": False,
+                "data": {"session_id": session_id, "exit_code": -1, "stdout": "", "stderr": "", "error": str(e)},
+            }
+
+    async def _execute_sandbox_read_file(
+        self,
+        message_id: str,
+        session_id: str,
+        path: str,
+    ) -> dict:
+        """Read a file from the session sandbox workspace and return its content.
+
+        Sends back a ``sandbox_read_file_result`` message containing the
+        base64-encoded file content. The backend ``write_artifact`` tool decodes
+        it and persists the deliverable through the standard document +
+        object-storage pipeline. This handler performs no persistence itself.
+        """
+        try:
+            if not session_id:
+                raise ValueError("session_id is required")
+            if not path:
+                raise ValueError("path is required")
+
+            from ..sandbox import get_sandbox_manager
+
+            manager = get_sandbox_manager()
+            await manager.touch(session_id)
+            workspace = manager.get_workspace(session_id)
+            if workspace is None:
+                raise FileNotFoundError(
+                    f"Sandbox workspace not found for session_id={session_id}. "
+                    "Run the script first to create the sandbox."
+                )
+
+            host_path = workspace.resolve_host(path)
+            if not host_path.exists() or not host_path.is_file():
+                artifacts_dir = workspace.root / "artifacts"
+                available = [f.name for f in artifacts_dir.iterdir() if f.is_file()] if artifacts_dir.exists() else []
+                raise FileNotFoundError(
+                    f"File '{path}' not found in sandbox workspace. "
+                    f"Available artifacts: {available or ['(none)']}"
+                )
+
+            raw_bytes = host_path.read_bytes()
+            content_base64 = base64.b64encode(raw_bytes).decode("ascii")
+
+            logger.info(
+                f"[CLIENT-SANDBOX-READ-FILE] Read {path}: size={len(raw_bytes)} bytes, "
+                f"session_id={session_id}, message_id={message_id}"
+            )
+
+            return {
+                "id": message_id,
+                "type": "sandbox_read_file_result",
+                "success": True,
+                "data": {
+                    "session_id": session_id,
+                    "path": path,
+                    "size_bytes": len(raw_bytes),
+                    "content_base64": content_base64,
+                },
+            }
+
+        except Exception as e:
+            logger.error(
+                f"[CLIENT-SANDBOX-READ-FILE-ERROR] Failed: message_id={message_id}, "
+                f"session_id={session_id}, path={path}, error={e}, client_id={self.client_id}",
+                exc_info=True,
+            )
+            return {
+                "id": message_id,
+                "type": "sandbox_read_file_result",
+                "success": False,
+                "data": {"session_id": session_id, "path": path, "error": str(e)},
+            }
+
     async def _execute_local_command(
             self,
             message_id: str,
@@ -1025,18 +1319,18 @@ class WebSocketClient:
         Execute local command
 
         Args:
-            message_id: 消息ID
-            command_line: 完整命令字符串
-            session_id: 聊天Session ID（required）
-            cwd: 工作目录
-            timeout: 超时时间（seconds）
+            message_id: Message ID
+            command_line: Full command string
+            session_id: Chat session ID (required)
+            cwd: Working directory
+            timeout: Timeout (seconds)
 
         Returns:
-            dict: 响应消息
+            dict: Response message
         """
         start_time = time.time()
         try:
-            # 验证 session_id
+            # Validate session_id
             if not session_id:
                 logger.error(f"[CLIENT-LOCAL-EXEC-ERROR] session_id is required: message_id={message_id}")
                 return {
@@ -1051,8 +1345,8 @@ class WebSocketClient:
                     },
                 }
 
-            # 直接使用原始命令字符串，交由 /bin/sh 解析（保留管道、重定向等 shell 元字符）
-            # 不做 shlex.split + shlex.quote 重组，否则 | 和 2>/dev/null 会被转义成字面字符串
+            # Use the raw command string directly and let /bin/sh parse it (preserve pipes, redirects, and other shell metacharacters)
+            # Don't reconstruct with shlex.split + shlex.quote, or | and 2>/dev/null get escaped into literal strings
             full_command = command_line.strip()
 
             # Permission check — only passthrough and allow_all are handled here.
@@ -1164,7 +1458,7 @@ class WebSocketClient:
                 "data": {
                     "exit_code": -1,
                     "stdout": "",
-                    "stderr": f"Execute local command失败: {str(e)}",
+                    "stderr": f"Execute local command failed: {str(e)}",
                     "execution_time": 0.0,
                 },
             }
@@ -1181,18 +1475,18 @@ class WebSocketClient:
         Execute MCP tool
 
         Args:
-            message_id: 消息ID
-            server_name: MCP 服务器名称
-            tool_name: 工具名称
-            session_id: 聊天Session ID（required）
-            arguments: 工具Arguments
+            message_id: Message ID
+            server_name: MCP server name
+            tool_name: Tool name
+            session_id: Chat session ID (required)
+            arguments: Tool arguments
 
         Returns:
-            dict: 响应消息
+            dict: Response message
         """
         start_time = time.time()
         try:
-            # 验证 session_id
+            # Validate session_id
             if not session_id:
                 logger.error(f"[CLIENT-MCP-EXEC-ERROR] session_id is required: message_id={message_id}")
                 return {
@@ -1235,7 +1529,7 @@ class WebSocketClient:
                         "server_name": server_name,
                         "tool_name": tool_name,
                         "result": None,
-                        "error": "MCP 客户端未初始化",
+                        "error": "MCP client not initialized",
                     },
                 }
 
@@ -1281,7 +1575,7 @@ class WebSocketClient:
                             "server_name": server_name,
                             "tool_name": tool_name,
                             "result": None,
-                            "error": f"Execute MCP tool失败: tool不存在, available={available_names}",
+                            "error": f"Execute MCP tool failed: tool not found, available={available_names}",
                         },
                     }
                 try:
@@ -1314,7 +1608,7 @@ class WebSocketClient:
                                 "server_name": server_name,
                                 "tool_name": tool_name,
                                 "result": None,
-                                "error": f"Execute MCP tool失败: tool不存在, available={available_names}",
+                                "error": f"Execute MCP tool failed: tool not found, available={available_names}",
                             },
                         }
 
@@ -1394,7 +1688,7 @@ class WebSocketClient:
                     "server_name": server_name,
                     "tool_name": tool_name,
                     "result": None,
-                    "error": f"Execute MCP tool失败: {str(e)}",
+                    "error": f"Execute MCP tool failed: {str(e)}",
                 },
             }
 
@@ -1409,13 +1703,13 @@ class WebSocketClient:
         Execute document read
 
         Args:
-            message_id: 消息ID
-            file_path: 文件路径
-            session_id: 聊天Session ID
-            encoding: 文件编码
+            message_id: Message ID
+            file_path: File path
+            session_id: Chat session ID
+            encoding: File encoding
 
         Returns:
-            dict: 响应消息
+            dict: Response message
         """
         start_time = time.time()
         try:
@@ -1485,7 +1779,7 @@ class WebSocketClient:
                     "content": None,
                     "encoding": None,
                     "size": None,
-                    "error": f"Execute document read失败: {str(e)}",
+                    "error": f"Execute document read failed: {str(e)}",
                 },
             }
 
@@ -1502,15 +1796,15 @@ class WebSocketClient:
         Execute document write
 
         Args:
-            message_id: 消息ID
-            file_path: 文件路径
-            session_id: 聊天Session ID
-            content: 文件内容
-            encoding: 文件编码
-            create_dirs: 是否创建父目录
+            message_id: Message ID
+            file_path: File path
+            session_id: Chat session ID
+            content: File content
+            encoding: File encoding
+            create_dirs: Whether to create parent directories
 
         Returns:
-            dict: 响应消息
+            dict: Response message
         """
         start_time = time.time()
         try:
@@ -1592,7 +1886,7 @@ class WebSocketClient:
                 "data": {
                     "path": None,
                     "size": None,
-                    "error": f"Execute document write失败: {str(e)}",
+                    "error": f"Execute document write failed: {str(e)}",
                 },
             }
 
@@ -1610,16 +1904,16 @@ class WebSocketClient:
         Execute document edit
 
         Args:
-            message_id: 消息ID
-            file_path: 文件路径
-            session_id: 聊天Session ID
+            message_id: Message ID
+            file_path: File path
+            session_id: Chat session ID
             operation: Operation type（replace, append, prepend）
-            new_content: 新内容
-            old_content: 旧内容（Only needed for replace operation）
-            encoding: 文件编码
+            new_content: New content
+            old_content: Old content（Only needed for replace operation）
+            encoding: File encoding
 
         Returns:
-            dict: 响应消息
+            dict: Response message
         """
         start_time = time.time()
         try:
@@ -1704,12 +1998,136 @@ class WebSocketClient:
                     "operation": operation,
                     "size": None,
                     "path": None,
-                    "error": f"Execute document edit失败: {str(e)}",
+                    "error": f"Execute document edit failed: {str(e)}",
+                },
+            }
+
+    async def _execute_directory_list(
+        self,
+        message_id: str,
+        session_id: str,
+        path: Optional[str],
+        limit: int,
+    ) -> dict:
+        start_time = time.time()
+        try:
+            result = (
+                list_allowed_directories(limit=limit)
+                if path is None
+                else list_directory(path, limit=limit)
+            )
+
+            elapsed = time.time() - start_time
+            self._log_operation(
+                session_id=session_id,
+                operation_type="DIR_LIST",
+                operation="list_allowed_directories" if path is None else "list_directory",
+                arguments={"path": path, "limit": limit},
+                result={"directories": result.get("directories", [])[:20]},
+                success=result.get("success", False),
+                elapsed=elapsed,
+                error=result.get("error"),
+            )
+
+            return {
+                "id": message_id,
+                "type": "directory_list_result",
+                "success": result.get("success", False),
+                "data": {
+                    "path": path,
+                    "directories": result.get("directories", []),
+                    "error": result.get("error"),
+                },
+            }
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-DIR-LIST-EXEC-ERROR] Directory list execution failed: message_id={message_id}, error={e}",
+                exc_info=True,
+            )
+            self._log_operation(
+                session_id=session_id,
+                operation_type="DIR_LIST",
+                operation="list_directory",
+                arguments={"path": path, "limit": limit},
+                result=None,
+                success=False,
+                elapsed=elapsed,
+                error=str(e),
+            )
+            return {
+                "id": message_id,
+                "type": "directory_list_result",
+                "success": False,
+                "data": {
+                    "path": path,
+                    "directories": [],
+                    "error": str(e),
+                },
+            }
+
+    async def _execute_directory_search(
+        self,
+        message_id: str,
+        session_id: str,
+        keyword: str,
+        limit: int,
+    ) -> dict:
+        start_time = time.time()
+        try:
+            result = search_directories(keyword, limit=limit)
+
+            elapsed = time.time() - start_time
+            self._log_operation(
+                session_id=session_id,
+                operation_type="DIR_SEARCH",
+                operation="search_directories",
+                arguments={"keyword": keyword, "limit": limit},
+                result={"directories": result.get("directories", [])[:20]},
+                success=result.get("success", False),
+                elapsed=elapsed,
+                error=result.get("error"),
+            )
+
+            return {
+                "id": message_id,
+                "type": "directory_search_result",
+                "success": result.get("success", False),
+                "data": {
+                    "keyword": keyword,
+                    "directories": result.get("directories", []),
+                    "error": result.get("error"),
+                },
+            }
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                f"[CLIENT-DIR-SEARCH-EXEC-ERROR] Directory search execution failed: message_id={message_id}, error={e}",
+                exc_info=True,
+            )
+            self._log_operation(
+                session_id=session_id,
+                operation_type="DIR_SEARCH",
+                operation="search_directories",
+                arguments={"keyword": keyword, "limit": limit},
+                result=None,
+                success=False,
+                elapsed=elapsed,
+                error=str(e),
+            )
+            return {
+                "id": message_id,
+                "type": "directory_search_result",
+                "success": False,
+                "data": {
+                    "keyword": keyword,
+                    "directories": [],
+                    "error": str(e),
                 },
             }
 
     async def _listen(self):
-        """监听Server message"""
+        """Listen for server messages"""
         try:
             logger.info(f"[CLIENT-LISTEN-START] Started listening for messages: client_id={self.client_id}")
 
@@ -1756,8 +2174,8 @@ class WebSocketClient:
         """
         Handle command and send response (run as background task)
 
-        Put command handling and response sending in separate task to avoid blocking _listen() loop。
-        这样可以确保在长任务执行期间：
+        Put command handling and response sending in separate task to avoid blocking _listen() loop.
+        This ensures that during long-running task execution:
         1. Message receive loop continues running, can receive server PING/PONG messages
         2. Heartbeat task can send normally
         3. WebSocket Connection stays active
@@ -1807,7 +2225,7 @@ class WebSocketClient:
             self.session = aiohttp.ClientSession()
             logger.debug(f"[CLIENT-SESSION-CREATED] aiohttp session created: client_id={self.client_id}")
 
-            # Establish WebSocket connection，配置适合长时间任务的Arguments
+            # Establish WebSocket connection, configure arguments suited for long-running tasks
             self.ws = await self.session.ws_connect(
                 ws_url,
                 heartbeat=self.heartbeat_interval,  # Enable WebSocket protocol-level heartbeat（PING/PONG）
@@ -1894,7 +2312,20 @@ class WebSocketClient:
         logger.info(f"[CLIENT-DISCONNECT-COMPLETE] Disconnect completed: client_id={self.client_id}")
 
     async def run(self):
-        """Run client (with automatic reconnection)"""
+        """Run client and clean up sandbox resources when it exits."""
+        try:
+            await self._run_loop()
+        finally:
+            try:
+                await self._shutdown_sandbox()
+            except Exception:
+                logger.exception(
+                    f"[CLIENT-SANDBOX-SHUTDOWN-ERROR] Error stopping sandbox manager: "
+                    f"client_id={self.client_id}"
+                )
+
+    async def _run_loop(self):
+        """Run client with automatic reconnection."""
         self.running = True
         logger.info(
             f"[CLIENT-RUN-START] Starting client: client_id={self.client_id}, "
@@ -1916,6 +2347,39 @@ class WebSocketClient:
             logger.error(
                 f"[CLIENT-MCP-ERROR] Error connecting to MCP services: error={e}, client_id={self.client_id}",
                 exc_info=True,
+            )
+
+        # Warm up the sandbox subsystem (resolve engine + pre-pull image) so the
+        # first sandbox tool call does not pay pull latency.  Best-effort: a
+        # missing engine/image only disables the sandbox path, host execution is
+        # unaffected.
+        try:
+            from ..sandbox import get_sandbox_manager
+
+            sandbox_config = get_config().get_sandbox_config()
+            if sandbox_config.enabled:
+                logger.info(
+                    f"[CLIENT-SANDBOX-PREPARE] Preparing sandbox: image={sandbox_config.image}, "
+                    f"engine={sandbox_config.engine}, client_id={self.client_id}"
+                )
+                manager = get_sandbox_manager()
+                status = await manager.prepare()
+                if status.get("ready"):
+                    logger.info(
+                        f"[CLIENT-SANDBOX-READY] Sandbox ready: engine={status.get('engine')}, "
+                        f"image={status.get('image')}, pulled={status.get('image_pulled')}, "
+                        f"client_id={self.client_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"[CLIENT-SANDBOX-NOT-READY] Sandbox unavailable at startup: "
+                        f"error={status.get('error')}, client_id={self.client_id}"
+                    )
+            else:
+                logger.info(f"[CLIENT-SANDBOX-DISABLED] Sandbox disabled by config: client_id={self.client_id}")
+        except Exception as e:
+            logger.warning(
+                f"[CLIENT-SANDBOX-PREPARE-ERROR] Sandbox preparation failed: error={e}, client_id={self.client_id}"
             )
 
         reconnect_count = 0
@@ -1953,6 +2417,11 @@ class WebSocketClient:
                 )
                 await asyncio.sleep(self.reconnect_interval)
 
+    async def _shutdown_sandbox(self):
+        from ..sandbox import get_sandbox_manager
+
+        await get_sandbox_manager().shutdown()
+
     async def stop(self):
         """Stop client"""
         logger.info(f"[CLIENT-STOP-START] Stopping client: client_id={self.client_id}")
@@ -1968,6 +2437,16 @@ class WebSocketClient:
         except Exception as e:
             logger.error(
                 f"[CLIENT-MCP-DISCONNECT-ERROR] Error disconnecting from MCP services: error={e}, "
+                f"client_id={self.client_id}",
+                exc_info=True,
+            )
+
+        try:
+            logger.info(f"[CLIENT-SANDBOX-SHUTDOWN] Stopping sandbox manager: client_id={self.client_id}")
+            await self._shutdown_sandbox()
+        except Exception as e:
+            logger.error(
+                f"[CLIENT-SANDBOX-SHUTDOWN-ERROR] Error stopping sandbox manager: error={e}, "
                 f"client_id={self.client_id}",
                 exc_info=True,
             )

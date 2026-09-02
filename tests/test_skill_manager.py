@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from castrel_proxy.skills.manager import SkillError, SkillsManager as SkillManager
+from castrel_proxy.skills.manager import SkillError
+from castrel_proxy.skills.manager import SkillsManager as SkillManager
 
 
 class SkillManagerImportTests(unittest.TestCase):

@@ -53,3 +53,24 @@ def test_save_preserves_yolo_setting(isolated_config_dir):
 
     assert saved_config["yolo"] is True
     assert config.get_yolo_enabled() is True
+
+
+def test_get_filesystem_roots_reads_config_list(isolated_config_dir):
+    """filesystem_roots should be loaded from config.yaml when present."""
+    config_file = isolated_config_dir / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "server_url": "https://server.example.com",
+                "verification_code": "code-123",
+                "client_id": "client-123",
+                "workspace_id": "workspace-123",
+                "filesystem_roots": ["/tmp/workspace", "/Users/demo/project"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = Config(config_dir=isolated_config_dir)
+
+    assert config.get_filesystem_roots() == ["/tmp/workspace", "/Users/demo/project"]

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-09-02
+
+### Added
+- Isolated Docker-compatible sandbox execution with per-session workspaces,
+  resource limits, idle reaping, artifact discovery, and sandbox file return.
+- Bridge-native directory listing and search requests with configurable
+  filesystem roots.
+- A bundled MIT-licensed `pptx-generator` skill with slide patching and
+  validation helpers.
+- Sandbox image and bundled runtime support for user skill mounts, Docker socket
+  access, and Eclipse Memory Analyzer.
+
+### Changed
+- Sandbox and skills settings are preserved in the proxy configuration and can
+  be overridden through supported environment variables.
+- MCP synchronization now sends an empty tool list when no MCP services are
+  configured.
+- Bundled MCP runtime setup now uses `uv` environments and suppresses OpenTelemetry
+  stdout noise that can corrupt stdio transport.
+
+### Fixed
+- Expanded user skill paths and advertised native directory request support.
+- Improved WebSocket handling for sandbox lifecycle, directory operations,
+  artifact transfer, and cleanup.
+
+## Earlier changes
+
 ### Added
 - **Background daemon mode**: Bridge can now run as a background process (Unix/macOS only)
   - Automatic PID file management at `~/.castrel/castrel-proxy.pid`
